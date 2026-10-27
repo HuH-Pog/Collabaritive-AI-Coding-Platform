@@ -1,0 +1,1 @@
+New-Item -ItemType File "path\to\empty_folder\.gitkeep"
