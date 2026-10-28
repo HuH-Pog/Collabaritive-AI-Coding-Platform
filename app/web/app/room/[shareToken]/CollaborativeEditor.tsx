@@ -30,6 +30,7 @@ const COLORS = [
 type Props = {
   shareToken: string;
   language: string;
+  initialGuestName: string;
 };
 
 type OnlineUser = {
@@ -53,6 +54,7 @@ type RunResult = {
 export default function CollaborativeEditor({
   shareToken,
   language,
+  initialGuestName
 }: Props) {
   const [editor, setEditor] =
     useState<Monaco.IStandaloneCodeEditor | null>(null);
@@ -93,17 +95,7 @@ export default function CollaborativeEditor({
     const doc = new Y.Doc();
     const color = COLORS[doc.clientID % COLORS.length];
 
-    let guestName = `Guest-${doc.clientID.toString().slice(-4)}`;
-
-    try {
-      const savedName = sessionStorage.getItem("codetogether-name");
-
-      if (savedName?.trim()) {
-        guestName = savedName.trim().slice(0, 30);
-      }
-    } catch {
-      // Use the guest name if storage is unavailable.
-    }
+    const guestName = initialGuestName;
 
     setName(guestName);
     setStatus("connecting");
@@ -143,7 +135,7 @@ export default function CollaborativeEditor({
           name: user.name.slice(0, 30),
           color:
             typeof user.color === "string" &&
-            /^#[0-9a-f]{6}$/i.test(user.color)
+              /^#[0-9a-f]{6}$/i.test(user.color)
               ? user.color
               : "#60a5fa",
           isMe: clientId === doc.clientID,
@@ -185,28 +177,32 @@ export default function CollaborativeEditor({
         providerRef.current = null;
       }
     };
-  }, [shareToken, editor]);
+  }, [shareToken, editor, initialGuestName]);
 
   function changeName(value: string) {
-    const nextName = value.slice(0, 30);
-    setName(nextName);
+  const nextName = value.slice(0, 30);
 
-    try {
-      sessionStorage.setItem("codetogether-name", nextName);
-    } catch {
-      // Presence works without browser storage.
-    }
+  // Keep the input editable, including when it is temporarily empty.
+  setName(nextName);
 
-    const awareness = providerRef.current?.awareness;
-    if (!awareness) return;
+  const displayName = nextName.trim() || initialGuestName;
 
-    const currentUser = awareness.getLocalState()?.user;
-
-    awareness.setLocalStateField("user", {
-      ...currentUser,
-      name: nextName.trim() || "Guest",
-    });
+  try {
+    sessionStorage.setItem("codetogether-name", displayName);
+  } catch {
+    // Presence still works without browser storage.
   }
+
+  const awareness = providerRef.current?.awareness;
+  if (!awareness) return;
+
+  const currentUser = awareness.getLocalState()?.user;
+
+  awareness.setLocalStateField("user", {
+    ...currentUser,
+    name: displayName,
+  });
+}
 
   async function runCode() {
     // The ref also prevents rapid duplicate clicks.
@@ -309,13 +305,13 @@ export default function CollaborativeEditor({
 
   const output = runResult
     ? [
-        runResult.stdout,
-        runResult.compileOutput,
-        runResult.stderr,
-        runResult.message,
-      ]
-        .filter(Boolean)
-        .join("\n")
+      runResult.stdout,
+      runResult.compileOutput,
+      runResult.stderr,
+      runResult.message,
+    ]
+      .filter(Boolean)
+      .join("\n")
     : "";
 
   return (
@@ -352,6 +348,11 @@ export default function CollaborativeEditor({
           <input
             value={name}
             onChange={(event) => changeName(event.target.value)}
+            onBlur={() => {
+              if (!name.trim()) {
+                changeName(initialGuestName);
+              }
+            }}
             maxLength={30}
             placeholder="Enter your name"
             style={{
