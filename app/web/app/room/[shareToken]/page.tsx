@@ -3,7 +3,15 @@ import RoomContent from "./RoomContent";
 
 export default function RoomPage() {
   return (
-    <Suspense fallback={<main>Loading room...</main>}>
+    <Suspense
+      fallback={
+        <div className="page-container">
+          <main style={{ flex: 1, display: "grid", placeItems: "center", color: "var(--text-muted)" }}>
+            Loading workspace...
+          </main>
+        </div>
+      }
+    >
       <RoomContent />
     </Suspense>
   );

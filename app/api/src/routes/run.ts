@@ -2,6 +2,7 @@ import { Router } from "express";
 import { rateLimit } from "express-rate-limit";
 import { setTimeout as delay } from "node:timers/promises";
 import { Room } from "../models/Room.js";
+import { verifyRoomToken } from "../services/roomAccess.js";
 
 const router = Router();
 
@@ -54,6 +55,31 @@ router.post("/", async (req, res) => {
         "Provide a room token, non-empty code up to 50 KB, and input up to 10 KB.",
     });
   }
+  const authorization = req.get("authorization");
+
+if (!authorization?.startsWith("Bearer ")) {
+  return res.status(401).json({
+    error: "Room access token is required.",
+  });
+}
+
+let access: Awaited<ReturnType<typeof verifyRoomToken>>;
+
+try {
+  access = await verifyRoomToken(
+    authorization.slice("Bearer ".length)
+  );
+} catch {
+  return res.status(401).json({
+    error: "Room access has expired. Please try again.",
+  });
+}
+
+if (access.role === "viewer") {
+  return res.status(403).json({
+    error: "Viewers cannot run code.",
+  });
+}
 
   const apiKey = process.env.JUDGE0_API_KEY;
 
@@ -67,7 +93,7 @@ router.post("/", async (req, res) => {
   const signal = AbortSignal.timeout(25_000);
 
   try {
-    const room = await Room.findOne({ shareToken }).exec();
+    const room = await Room.findById(access.roomId).exec();
 
     if (!room) {
       return res.status(404).json({
@@ -87,9 +113,9 @@ router.post("/", async (req, res) => {
     }
 
     const baseUrl = (
-      process.env.JUDGE0_URL ??
-      "https://judge0-ce.p.rapidapi.com"
-    ).replace(/\/+$/, "");
+  process.env.JUDGE0_URL ??
+  "https://api.onlinecompiler.io/api/judge0"
+).replace(/\/+$/, "");
 
     const headers = {
       "Content-Type": "application/json",

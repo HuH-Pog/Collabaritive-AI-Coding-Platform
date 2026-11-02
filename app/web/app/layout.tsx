@@ -3,8 +3,9 @@ import type { ReactNode } from "react";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "CodeTogether",
-  description: "A collaborative coding room",
+  title: "CodeTogether — Real-time Collaborative Coding Platform",
+  description:
+    "Write, run, and discuss code in real-time. Collaborative editor powered by Yjs and Monaco with role permissions and integrated room chat.",
 };
 
 export default function RootLayout({
@@ -14,6 +15,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
+      <head>
+        <meta name="color-scheme" content="light" />
+      </head>
       <body>{children}</body>
     </html>
   );

@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { Server } from "@hocuspocus/server";
 import mongoose, { Schema, model } from "mongoose";
+import { jwtVerify } from "jose";
 import * as Y from "yjs";
 
 interface IRoomDocument {
@@ -9,7 +10,6 @@ interface IRoomDocument {
   updatedAt: Date;
 }
 
-// The document ID is the room's shareToken.
 const roomDocumentSchema = new Schema<IRoomDocument>(
   {
     _id: {
@@ -34,42 +34,90 @@ const RoomDocument = model<IRoomDocument>(
 
 async function startServer() {
   const mongoUri = process.env.MONGO_URI;
+  const secret = process.env.ROOM_TOKEN_SECRET;
 
   if (!mongoUri) {
-    throw new Error("MONGO_URI is missing from your .env file.");
+    throw new Error("MONGO_URI is missing.");
   }
 
-  // Connect before accepting editor connections.
-  await mongoose.connect(mongoUri);
+  if (!secret || secret.length < 32) {
+    throw new Error(
+      "ROOM_TOKEN_SECRET must contain at least 32 characters."
+    );
+  }
 
-  console.log("Realtime server connected to MongoDB.");
+  const signingKey = new TextEncoder().encode(secret);
+
+  await mongoose.connect(mongoUri);
 
   const server = new Server({
     name: "Collaborative-editor",
     port: 1234,
-
-    // Save after 1 second without changes.
     debounce: 1000,
-
-    // Also save periodically during continuous typing.
     maxDebounce: 5000,
 
-    async onLoadDocument({ documentName, document }) {
-      // documentName is the shareToken supplied by the frontend.
-      // "rooms" is the default collection for your Room model.
+    async onAuthenticate({
+  token,
+  documentName,
+  connectionConfig,
+}) {
+      const { payload } = await jwtVerify(
+        token,
+        signingKey,
+        {
+          algorithms: ["HS256"],
+          issuer: "codetogether-api",
+          audience: "codetogether-room",
+        }
+      );
+
+      if (
+        payload.sub !== documentName ||
+        !/^[a-f0-9]{24}$/i.test(documentName)
+      ) {
+        throw new Error("Invalid room access.");
+      }
+
+      const role = payload.role;
+
+      if (
+        role !== "owner" &&
+        role !== "editor" &&
+        role !== "viewer"
+      ) {
+        throw new Error("Invalid role.");
+      }
+
       const room = await mongoose.connection
         .collection("rooms")
-        .findOne(
-          { shareToken: documentName },
-          { projection: { _id: 1 } }
-        );
+        .findOne({
+          _id: new mongoose.Types.ObjectId(documentName),
+        });
 
       if (!room) {
         throw new Error("Room not found.");
       }
 
+      // Enforced by Hocuspocus, independently of the frontend.
+      connectionConfig.readOnly = role === "viewer";
+
+      return { role };
+    },
+
+    async onLoadDocument({ documentName, document }) {
+      const room = await mongoose.connection
+        .collection("rooms")
+        .findOne({
+          _id: new mongoose.Types.ObjectId(documentName),
+        });
+
+      if (!room) {
+        throw new Error("Room not found.");
+      }
+
+      // Keep the existing persistence key so saved code is preserved.
       const savedDocument = await RoomDocument.findById(
-        documentName
+        room.shareToken
       ).exec();
 
       if (savedDocument) {
@@ -77,36 +125,39 @@ async function startServer() {
           document,
           new Uint8Array(savedDocument.state)
         );
-
-        console.log("Loaded saved editor document.");
-      } else {
-        console.log("Opened a room without saved code.");
       }
 
       return document;
     },
 
     async onStoreDocument({ documentName, document }) {
-      // Save the complete Yjs state, including collaboration data.
+      const room = await mongoose.connection
+        .collection("rooms")
+        .findOne({
+          _id: new mongoose.Types.ObjectId(documentName),
+        });
+
+      if (!room) {
+        throw new Error("Room not found.");
+      }
+
       const state = Buffer.from(
         Y.encodeStateAsUpdate(document)
       );
 
       await RoomDocument.updateOne(
-        { _id: documentName },
+        { _id: room.shareToken },
         { $set: { state } },
         { upsert: true }
       ).exec();
 
-      console.log("Saved editor document to MongoDB.");
+      console.log("Saved editor document.");
     },
   });
 
   await server.listen();
 
-  console.log(
-    "Hocuspocus listening on ws://localhost:1234"
-  );
+  console.log("Hocuspocus listening on ws://localhost:1234");
 }
 
 startServer().catch((error) => {

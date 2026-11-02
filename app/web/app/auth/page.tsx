@@ -1,11 +1,19 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
+import {
+  Eye,
+  EyeOff,
+  ArrowRight,
+  LogOut,
+  AlertCircle,
+  FolderCode,
+} from "lucide-react";
 
-const API_URL =
-  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
 
 type User = {
   id: string;
@@ -13,18 +21,28 @@ type User = {
   email: string;
 };
 
-export default function AuthPage() {
-  const [mode, setMode] = useState<"login" | "signup">("login");
+function AuthContent() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const returnTo = searchParams.get("returnTo") || searchParams.get("redirect") || "";
 
+  const [mode, setMode] = useState<"login" | "signup">("login");
   const [user, setUser] = useState<User | null>(null);
   const [checkingSession, setCheckingSession] = useState(true);
 
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+
+  // Safely check return path: must start with "/" and not "//"
+  const safeReturnUrl =
+    returnTo && returnTo.startsWith("/") && !returnTo.startsWith("//")
+      ? returnTo
+      : "/my-rooms";
 
   useEffect(() => {
     const controller = new AbortController();
@@ -46,14 +64,9 @@ export default function AuthPage() {
         }
 
         setUser(data.user);
-      } catch (err) {
+      } catch {
         if (controller.signal.aborted) return;
-
-        setError(
-          err instanceof Error
-            ? err.message
-            : "Could not connect to the server."
-        );
+        // Keep quiet on initial load session check failure unless not aborted
       } finally {
         if (!controller.signal.aborted) {
           setCheckingSession(false);
@@ -62,7 +75,6 @@ export default function AuthPage() {
     }
 
     loadSession();
-
     return () => controller.abort();
   }, []);
 
@@ -74,21 +86,18 @@ export default function AuthPage() {
     setError("");
 
     try {
-      const response = await fetch(
-        `${API_URL}/api/auth/${mode}`,
-        {
-          method: "POST",
-          credentials: "include",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            ...(mode === "signup" ? { name } : {}),
-            email,
-            password,
-          }),
-        }
-      );
+      const response = await fetch(`${API_URL}/api/auth/${mode}`, {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          ...(mode === "signup" ? { name: name.trim() } : {}),
+          email: email.trim(),
+          password,
+        }),
+      });
 
       const data = await response.json();
 
@@ -98,9 +107,12 @@ export default function AuthPage() {
 
       setUser(data.user);
       setPassword("");
+
+      // On successful login/signup, navigate to returnTo or /my-rooms
+      router.push(safeReturnUrl);
     } catch (err) {
       setError(
-        err instanceof Error ? err.message : "Something went wrong."
+        err instanceof Error ? err.message : "Something went wrong during sign in."
       );
     } finally {
       setBusy(false);
@@ -114,13 +126,10 @@ export default function AuthPage() {
     setError("");
 
     try {
-      const response = await fetch(
-        `${API_URL}/api/auth/logout`,
-        {
-          method: "POST",
-          credentials: "include",
-        }
-      );
+      const response = await fetch(`${API_URL}/api/auth/logout`, {
+        method: "POST",
+        credentials: "include",
+      });
 
       if (!response.ok) {
         throw new Error("Could not sign out.");
@@ -129,184 +138,278 @@ export default function AuthPage() {
       setUser(null);
       setPassword("");
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Could not sign out."
-      );
+      setError(err instanceof Error ? err.message : "Could not sign out.");
     } finally {
       setBusy(false);
     }
   }
 
   if (checkingSession) {
-    return <main className="page">Checking your session...</main>;
+    return (
+      <div className="page-container">
+        <main className="auth-wrapper">
+          <div className="auth-card" style={{ textAlign: "center", color: "var(--text-muted)" }}>
+            <p>Checking session status...</p>
+          </div>
+        </main>
+      </div>
+    );
   }
 
   return (
-    <main className="page">
-      <section
-        className="room-card"
-        style={{
-          width: "100%",
-          maxWidth: 480,
-          margin: "40px auto",
-          boxSizing: "border-box",
-        }}
-      >
-        <Link className="brand" href="/">
-          ◈ CodeTogether
-        </Link>
+    <div className="page-container">
+      {/* Authentication Page Header */}
+      <header className="landing-header">
+        <div className="landing-header-inner">
+          <Link href="/" className="brand-badge">
+            <span className="brand-icon">◈</span>
+            <span className="brand-name">
+              Code<span>Together</span>
+            </span>
+          </Link>
 
-        {user ? (
-          <div style={{ marginTop: 24 }}>
-            <p className="eyebrow">YOUR ACCOUNT</p>
+          <Link href="/" className="btn btn-ghost btn-sm">
+            ← Back to Home
+          </Link>
+        </div>
+      </header>
 
-            <h1>Welcome, {user.name}</h1>
-            <p className="muted">{user.email}</p>
+      <main className="auth-wrapper">
+        <div className="auth-card">
+          {user ? (
+            /* Signed-In Account Details View */
+            <div>
+              <div className="auth-header">
+                <span className="badge badge-blue" style={{ marginBottom: 12 }}>
+                  Active Session
+                </span>
+                <h1 className="auth-title">Welcome back, {user.name}</h1>
+                <p className="auth-subtitle">{user.email}</p>
+              </div>
 
-            <div
-              style={{
-                display: "flex",
-                flexWrap: "wrap",
-                gap: 12,
-                marginTop: 24,
-              }}
-            >
-              <Link className="button" href="/">
-                Go to home
-              </Link>
+              {error && (
+                <div className="alert-box alert-error" role="alert" style={{ marginBottom: 20 }}>
+                  <AlertCircle size={16} />
+                  <span>{error}</span>
+                </div>
+              )}
 
-              <button
-                className="button secondary"
-                type="button"
-                disabled={busy}
-                onClick={logout}
-              >
-                {busy ? "Signing out..." : "Sign out"}
-              </button>
+              <div style={{ display: "grid", gap: 12, marginTop: 24 }}>
+                <Link href="/my-rooms" className="btn btn-primary btn-lg" style={{ width: "100%" }}>
+                  <FolderCode size={16} />
+                  Go to My Rooms
+                  <ArrowRight size={16} />
+                </Link>
+
+                <Link href="/create-room" className="btn btn-secondary btn-lg" style={{ width: "100%" }}>
+                  Create a new room
+                </Link>
+
+                <button
+                  type="button"
+                  onClick={logout}
+                  disabled={busy}
+                  className="btn btn-ghost"
+                  style={{ width: "100%", marginTop: 8 }}
+                >
+                  <LogOut size={15} />
+                  {busy ? "Signing out..." : "Sign out"}
+                </button>
+              </div>
             </div>
-          </div>
-        ) : (
-          <>
-            <div style={{ marginTop: 24 }}>
-              <p className="eyebrow">YOUR CODING SPACE</p>
+          ) : (
+            /* Sign In / Sign Up Form View */
+            <div>
+              <div className="auth-header">
+                <h1 className="auth-title">
+                  {mode === "login" ? "Sign in to your account" : "Create your account"}
+                </h1>
+                <p className="auth-subtitle">
+                  {mode === "login"
+                    ? "Enter your credentials to access your rooms"
+                    : "Get started with your collaborative coding workspace"}
+                </p>
+              </div>
 
-              <h1>
-                {mode === "signup"
-                  ? "Create an account"
-                  : "Welcome back"}
-              </h1>
+              <div className="auth-mode-switch" role="tablist">
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={mode === "login"}
+                  className={`auth-mode-btn ${mode === "login" ? "active" : ""}`}
+                  onClick={() => {
+                    setMode("login");
+                    setError("");
+                  }}
+                >
+                  Sign in
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={mode === "signup"}
+                  className={`auth-mode-btn ${mode === "signup" ? "active" : ""}`}
+                  onClick={() => {
+                    setMode("signup");
+                    setError("");
+                  }}
+                >
+                  Create account
+                </button>
+              </div>
 
-              <p className="muted">
-                {mode === "signup"
-                  ? "Create your CodeTogether account."
-                  : "Sign in to your CodeTogether account."}
-              </p>
-            </div>
+              {error && (
+                <div className="alert-box alert-error" role="alert" style={{ marginBottom: 20 }}>
+                  <AlertCircle size={16} />
+                  <span>{error}</span>
+                </div>
+              )}
 
-            <form
-              onSubmit={submitAuth}
-              style={{
-                display: "grid",
-                gap: 16,
-                marginTop: 24,
-              }}
-            >
-              {mode === "signup" && (
-                <label>
-                  Name
+              <form onSubmit={submitAuth} style={{ display: "grid", gap: 16 }}>
+                {mode === "signup" && (
+                  <div className="form-group">
+                    <label className="form-label" htmlFor="user-name">
+                      Full name
+                    </label>
+                    <input
+                      id="user-name"
+                      type="text"
+                      className="form-input"
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      placeholder="e.g., Alex Johnson"
+                      autoComplete="name"
+                      maxLength={30}
+                      required
+                    />
+                  </div>
+                )}
+
+                <div className="form-group">
+                  <label className="form-label" htmlFor="user-email">
+                    Email address
+                  </label>
                   <input
-                    className="auth-input"
-                    value={name}
-                    onChange={(event) => setName(event.target.value)}
-                    autoComplete="name"
-                    maxLength={30}
+                    id="user-email"
+                    type="email"
+                    className="form-input"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="name@example.com"
+                    autoComplete="email"
+                    maxLength={254}
                     required
                   />
-                </label>
-              )}
+                </div>
 
-              <label>
-                Email
-                <input
-                  className="auth-input"
-                  type="email"
-                  value={email}
-                  onChange={(event) => setEmail(event.target.value)}
-                  autoComplete="email"
-                  maxLength={254}
-                  required
-                />
-              </label>
+                <div className="form-group">
+                  <label className="form-label" htmlFor="user-password">
+                    Password
+                  </label>
+                  <div className="password-input-wrapper">
+                    <input
+                      id="user-password"
+                      type={showPassword ? "text" : "password"}
+                      className="form-input"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      placeholder={mode === "signup" ? "At least 6 characters" : "••••••••"}
+                      autoComplete={mode === "signup" ? "new-password" : "current-password"}
+                      minLength={mode === "signup" ? 6 : 1}
+                      maxLength={128}
+                      required
+                    />
+                    <button
+                      type="button"
+                      className="password-toggle-btn"
+                      onClick={() => setShowPassword(!showPassword)}
+                      aria-label={showPassword ? "Hide password" : "Show password"}
+                    >
+                      {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                    </button>
+                  </div>
+                  {mode === "signup" && (
+                    <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                      Use at least 6 characters (12+ recommended).
+                    </span>
+                  )}
+                </div>
 
-              <label>
-                Password
-                <input
-                  className="auth-input"
-                  type="password"
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                  autoComplete={
-                    mode === "signup"
-                      ? "new-password"
-                      : "current-password"
-                  }
-                  minLength={mode === "signup" ? 6 : 1}
-                  maxLength={128}
-                  required
-                />
-              </label>
+                <button
+                  type="submit"
+                  disabled={busy}
+                  className="btn btn-primary btn-lg"
+                  style={{ width: "100%", marginTop: 8 }}
+                >
+                  {busy ? (
+                    "Processing..."
+                  ) : mode === "signup" ? (
+                    <>
+                      Create account
+                      <ArrowRight size={16} />
+                    </>
+                  ) : (
+                    <>
+                      Sign in
+                      <ArrowRight size={16} />
+                    </>
+                  )}
+                </button>
+              </form>
 
-              {mode === "signup" && (
-                <p className="muted" style={{ margin: 0 }}>
-                  Use at least 12 characters.
-                </p>
-              )}
+              <div style={{ marginTop: 24, textAlign: "center", fontSize: 13, color: "var(--text-muted)" }}>
+                {mode === "signup" ? (
+                  <span>
+                    Already have an account?{" "}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMode("login");
+                        setError("");
+                      }}
+                      style={{ color: "var(--accent-primary)", fontWeight: 600 }}
+                    >
+                      Sign in here
+                    </button>
+                  </span>
+                ) : (
+                  <span>
+                    New to CodeTogether?{" "}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMode("signup");
+                        setError("");
+                      }}
+                      style={{ color: "var(--accent-primary)", fontWeight: 600 }}
+                    >
+                      Create an account
+                    </button>
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      </main>
+    </div>
+  );
+}
 
-              <button
-                className="button"
-                type="submit"
-                disabled={busy}
-              >
-                {busy
-                  ? "Please wait..."
-                  : mode === "signup"
-                    ? "Create account"
-                    : "Sign in"}
-              </button>
-            </form>
-
-            <p style={{ marginTop: 20 }}>
-              {mode === "signup"
-                ? "Already have an account? "
-                : "New to CodeTogether? "}
-
-              <button
-                className="button secondary"
-                type="button"
-                disabled={busy}
-                onClick={() => {
-                  setMode(mode === "login" ? "signup" : "login");
-                  setPassword("");
-                  setError("");
-                }}
-              >
-                {mode === "signup" ? "Sign in" : "Create account"}
-              </button>
-            </p>
-
-            <Link href="/">Back to home</Link>
-          </>
-        )}
-
-        {error && (
-          <p
-            role="alert"
-            style={{ color: "#f87171", marginTop: 16 }}
-          >
-            {error}
-          </p>
-        )}
-      </section>
-    </main>
+export default function AuthPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="page-container">
+          <main className="auth-wrapper">
+            <div className="auth-card" style={{ textAlign: "center", color: "var(--text-muted)" }}>
+              Loading...
+            </div>
+          </main>
+        </div>
+      }
+    >
+      <AuthContent />
+    </Suspense>
   );
 }
