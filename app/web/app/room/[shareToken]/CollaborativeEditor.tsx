@@ -21,6 +21,10 @@ import {
   AlertCircle,
 } from "lucide-react";
 import RoomChat from "./RoomChat";
+import FileExplorer, {
+  type WorkspaceFile,
+  type WorkspaceEntry,
+} from "./FileExplorer";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
 const WS_URL = process.env.NEXT_PUBLIC_REALTIME_URL ?? "ws://localhost:1234";
@@ -65,6 +69,7 @@ type OnlineUser = {
   name: string;
   color: string;
   isMe: boolean;
+  fileId: string | null;
 };
 
 type RunResult = {
@@ -111,6 +116,9 @@ export default function CollaborativeEditor({
   const [editor, setEditor] = useState<Monaco.IStandaloneCodeEditor | null>(null);
 
   const providerRef = useRef<HocuspocusProvider | null>(null);
+  const documentCleanupsRef = useRef<Set<() => void>>(
+  new Set()
+);
   const runControllerRef = useRef<AbortController | null>(null);
   const editorContainerRef = useRef<HTMLDivElement | null>(null);
 
@@ -137,8 +145,21 @@ export default function CollaborativeEditor({
   const [copyingViewer, setCopyingViewer] = useState(false);
   const [inviteError, setInviteError] = useState("");
 
+  const [sharedDoc, setSharedDoc] = useState<Y.Doc | null>(null);
+  const [files, setFiles] = useState<WorkspaceFile[]>([]);
+  const [activeFileId, setActiveFileId] = useState<string | null>(
+    "main"
+  );
+  const [synced, setSynced] = useState(false);
+
   const isViewer = role === "viewer";
-  const canEdit = !isViewer && authenticated && status === "connected";
+  const canEdit =
+    !isViewer &&
+    authenticated &&
+    status === "connected" &&
+    synced;
+
+    const [entries, setEntries] = useState<WorkspaceEntry[]>([]);
 
   // Abort execution when shareToken changes or on unmount
   useEffect(() => {
@@ -173,13 +194,49 @@ export default function CollaborativeEditor({
   }, [editor]);
 
   // Yjs & Hocuspocus setup
+
   useEffect(() => {
+
     if (!editor) return;
 
     const model = editor.getModel();
     if (!model) return;
 
     const doc = new Y.Doc();
+    setSharedDoc(doc);
+    setSynced(false);
+
+    const fileMap = doc.getMap<WorkspaceEntry>("files");
+
+function updateFiles() {
+  const nextEntries = Array.from(fileMap.values());
+
+  const nextFiles = nextEntries
+    .filter(
+      (entry): entry is WorkspaceFile =>
+        entry.kind === "file"
+    )
+    .sort((a, b) => {
+      if (a.id === b.id) return 0;
+      if (a.id === "main") return -1;
+      if (b.id === "main") return 1;
+
+      return a.name.localeCompare(b.name) ||
+        a.id.localeCompare(b.id);
+    });
+
+  setEntries(nextEntries);
+  setFiles(nextFiles);
+
+  setActiveFileId((current) =>
+    nextFiles.some((file) => file.id === current)
+      ? current
+      : nextFiles[0]?.id ?? null
+  );
+}
+
+    fileMap.observe(updateFiles);
+    updateFiles();
     const color = COLORS[doc.clientID % COLORS.length];
     const accessController = new AbortController();
 
@@ -215,6 +272,10 @@ export default function CollaborativeEditor({
           setAuthenticated(false);
         }
       },
+      onSynced: ({ state }) => {
+        if (!active) return;
+        setSynced(state);
+      },
       onAuthenticated: () => {
         if (!active) return;
         setAuthenticated(true);
@@ -247,31 +308,39 @@ export default function CollaborativeEditor({
     }
 
     function updateUsers() {
-      if (!active || !awareness) return;
+  if (!active || !awareness) return;
 
-      const onlineUsers: OnlineUser[] = [];
+  const onlineUsers: OnlineUser[] = [];
 
-      awareness.getStates().forEach((state, clientId) => {
-        const user = state.user;
-        if (!user || typeof user.name !== "string") return;
+  awareness.getStates().forEach((state, clientId) => {
+    const user = state.user;
 
-        onlineUsers.push({
-          clientId,
-          name: user.name.slice(0, 30),
-          color:
-            typeof user.color === "string" && /^#[0-9a-f]{6}$/i.test(user.color)
-              ? user.color
-              : "#60a5fa",
-          isMe: clientId === doc.clientID,
-        });
-      });
+    if (!user || typeof user.name !== "string") return;
 
-      onlineUsers.sort(
-        (a, b) => Number(b.isMe) - Number(a.isMe) || a.clientId - b.clientId
-      );
+    onlineUsers.push({
+      clientId,
+      name: user.name.slice(0, 30),
+      color:
+        typeof user.color === "string" &&
+        /^#[0-9a-f]{6}$/i.test(user.color)
+          ? user.color
+          : "#60a5fa",
+      isMe: clientId === doc.clientID,
+      fileId:
+        typeof state.activeFileId === "string"
+          ? state.activeFileId
+          : null,
+    });
+  });
 
-      setUsers(onlineUsers);
-    }
+  onlineUsers.sort(
+    (a, b) =>
+      Number(b.isMe) - Number(a.isMe) ||
+      a.clientId - b.clientId
+  );
+
+  setUsers(onlineUsers);
+}
 
     awareness.on("change", updateUsers);
     awareness.setLocalStateField("user", {
@@ -281,27 +350,321 @@ export default function CollaborativeEditor({
 
     updateUsers();
 
-    const binding = new MonacoBinding(
-      doc.getText("code"),
-      model,
-      new Set([editor]),
-      awareness
-    );
+
 
     return () => {
-      active = false;
-      accessController.abort();
+  active = false;
+  accessController.abort();
 
-      awareness.off("change", updateUsers);
-      binding.destroy();
-      provider.destroy();
-      doc.destroy();
+  // Clean up binding and cursor observers before destroying Yjs.
+  for (const cleanup of [...documentCleanupsRef.current]) {
+    cleanup();
+  }
 
-      if (providerRef.current === provider) {
-        providerRef.current = null;
-      }
-    };
+  awareness.off("change", updateUsers);
+  fileMap.unobserve(updateFiles);
+
+  provider.destroy();
+  doc.destroy();
+
+  if (providerRef.current === provider) {
+    providerRef.current = null;
+  }
+};
   }, [shareToken, editor, initialGuestName, documentName]);
+
+  const activeFile =
+    files.find((file) => file.id === activeFileId) ?? null;
+
+  const activeTextKey = activeFile?.textKey ?? null;
+
+  useEffect(() => {
+    if (!editor || !sharedDoc || !activeTextKey || !synced) {
+      return;
+    }
+
+    const model = editor.getModel();
+    if (!model) return;
+
+    // Clear undo history from the previously selected file.
+    model.setValue("");
+
+    const binding = new MonacoBinding(
+      sharedDoc.getText(activeTextKey),
+      model,
+      new Set([editor])
+    );
+
+    const originalDestroy = binding.destroy.bind(binding);
+let destroyed = false;
+
+const cleanup = () => {
+  if (destroyed) return;
+  destroyed = true;
+
+  documentCleanupsRef.current.delete(cleanup);
+  originalDestroy();
+};
+
+binding.destroy = cleanup;
+documentCleanupsRef.current.add(cleanup);
+
+return cleanup;
+  }, [editor, sharedDoc, activeTextKey, synced]);
+
+  function createEntry(
+  kind: "file" | "folder",
+  name: string,
+  parentId: string | null
+): string | null {
+  if (!sharedDoc || !canEdit) {
+    return "Connect as an editor to create files or folders.";
+  }
+
+  const nextName = name.trim();
+
+  if (
+    !nextName ||
+    nextName.length > 80 ||
+    !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(nextName)
+  ) {
+    return "Use letters, numbers, dots, hyphens, or underscores.";
+  }
+
+  if (kind === "file") {
+    const extension = language === "python" ? ".py" : ".js";
+
+    if (!nextName.endsWith(extension)) {
+      return `Use ${extension} files in this room.`;
+    }
+  }
+
+  const fileMap = sharedDoc.getMap<WorkspaceEntry>("files");
+
+  if (parentId !== null) {
+    const parent = fileMap.get(parentId);
+
+    if (!parent || parent.kind !== "folder") {
+      return "The selected folder no longer exists.";
+    }
+  }
+
+  const duplicate = Array.from(fileMap.values()).some(
+    (entry) =>
+      entry.parentId === parentId &&
+      entry.name.toLowerCase() === nextName.toLowerCase()
+  );
+
+  if (duplicate) {
+    return "An item with that name already exists here.";
+  }
+
+  const id = crypto.randomUUID();
+
+  if (kind === "folder") {
+    fileMap.set(id, {
+      id,
+      kind: "folder",
+      name: nextName,
+      parentId,
+    });
+  } else {
+    fileMap.set(id, {
+      id,
+      kind: "file",
+      name: nextName,
+      parentId,
+      textKey: `file:${id}`,
+    });
+
+    setActiveFileId(id);
+  }
+
+  return null;
+}
+
+function createFile(
+  filename: string,
+  parentId: string | null = null
+): string | null {
+  return createEntry("file", filename, parentId);
+}
+
+function createFolder(
+  name: string,
+  parentId: string | null = null
+): string | null {
+  return createEntry("folder", name, parentId);
+}
+
+  function renameFile(
+      fileId: string,
+      filename: string
+    ): string | null {
+      if (!sharedDoc || !canEdit) {
+        return "Connect as an editor to rename files.";
+      }
+
+      const fileMap = sharedDoc.getMap<WorkspaceEntry>("files")
+      const file = fileMap.get(fileId);
+
+      if (!file || file.kind !== "file") {
+        return "This file no longer exists.";
+      }
+
+      const nextName = filename.trim();
+
+      if (
+        !nextName ||
+        nextName.length > 80 ||
+        !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(nextName)
+      ) {
+        return "Use letters, numbers, dots, hyphens, or underscores.";
+      }
+
+      const extension = language === "python" ? ".py" : ".js";
+
+      if (!nextName.endsWith(extension)) {
+        return `Use ${extension} files in this room.`;
+      }
+
+      const duplicate = Array.from(fileMap.values()).some(
+        (entry) =>
+          entry.id !== fileId &&
+          entry.parentId === file.parentId &&
+          entry.name.toLowerCase() === nextName.toLowerCase()
+      );
+
+      if (duplicate) {
+        return "A file with that name already exists.";
+      }
+
+      if (file.name === nextName) return null;
+
+      // Replace the metadata object so Yjs broadcasts the change.
+      // The stable ID and textKey preserve the file's contents.
+      fileMap.set(fileId, {
+        ...file,
+        name: nextName,
+      });
+
+      return null;
+    }
+
+    function deleteFile(fileId: string): string | null {
+      if (!sharedDoc || !canEdit) {
+        return "Connect as an editor to delete files.";
+      }
+
+      if (fileId === "main") {
+        return "The original file must remain in the room.";
+      }
+
+      const fileMap = sharedDoc.getMap<WorkspaceEntry>("files");
+      const file = fileMap.get(fileId);
+
+      if (!file || file.kind !== "file") {
+        return "This file has already been deleted.";
+      }
+
+      // Remove the file from the shared explorer.
+      // Existing observers select another file automatically.
+      fileMap.delete(fileId);
+
+      return null;
+    }
+
+    function renameFolder(
+  folderId: string,
+  name: string
+): string | null {
+  if (!sharedDoc || !canEdit) {
+    return "Connect as an editor to rename folders.";
+  }
+
+  const fileMap = sharedDoc.getMap<WorkspaceEntry>("files");
+  const folder = fileMap.get(folderId);
+
+  if (!folder || folder.kind !== "folder") {
+    return "This folder no longer exists.";
+  }
+
+  const nextName = name.trim();
+
+  if (
+    !nextName ||
+    nextName.length > 80 ||
+    !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(nextName)
+  ) {
+    return "Use letters, numbers, dots, hyphens, or underscores.";
+  }
+
+  const duplicate = Array.from(fileMap.values()).some(
+    (entry) =>
+      entry.id !== folderId &&
+      entry.parentId === folder.parentId &&
+      entry.name.toLowerCase() === nextName.toLowerCase()
+  );
+
+  if (duplicate) {
+    return "An item with that name already exists here.";
+  }
+
+  if (folder.name === nextName) return null;
+
+  fileMap.set(folderId, {
+    ...folder,
+    name: nextName,
+  });
+
+  return null;
+}
+
+function deleteFolder(folderId: string): string | null {
+  if (!sharedDoc || !canEdit) {
+    return "Connect as an editor to delete folders.";
+  }
+
+  const fileMap = sharedDoc.getMap<WorkspaceEntry>("files");
+  const folder = fileMap.get(folderId);
+
+  if (!folder || folder.kind !== "folder") {
+    return "This folder has already been deleted.";
+  }
+
+  const entries = Array.from(fileMap.values());
+  const idsToDelete = new Set<string>();
+  const pending = [folderId];
+
+  // Collect the folder and every descendant.
+  while (pending.length > 0) {
+    const currentId = pending.pop()!;
+
+    if (idsToDelete.has(currentId)) continue;
+    idsToDelete.add(currentId);
+
+    for (const entry of entries) {
+      if (entry.parentId === currentId) {
+        pending.push(entry.id);
+      }
+    }
+  }
+
+  if (idsToDelete.has("main")) {
+    return "This folder contains the protected original file.";
+  }
+
+  // Broadcast the removal together as one Yjs transaction.
+  sharedDoc.transact(() => {
+    for (const id of idsToDelete) {
+      fileMap.delete(id);
+    }
+  });
+
+  return null;
+}
+
+    
 
   function changeName(value: string) {
     const nextName = value.slice(0, 30);
@@ -386,6 +749,17 @@ export default function CollaborativeEditor({
     }
 
     if (!editor || runControllerRef.current) return;
+    if (
+  !canEdit ||
+  !sharedDoc ||
+  !activeFileId ||
+  sharedDoc
+    .getMap<WorkspaceEntry>("files")
+    .get(activeFileId)?.kind !== "file"
+) {
+  setRunError("Select an available file before running code.");
+  return;
+}
 
     const code = editor.getValue();
 
@@ -460,6 +834,204 @@ export default function CollaborativeEditor({
       }
     }
   }
+  
+  // Share and display cursor positions for the selected file.
+useEffect(() => {
+  const awareness = providerRef.current?.awareness;
+  const model = editor?.getModel();
+
+  if (
+    !editor ||
+    !model ||
+    !sharedDoc ||
+    !awareness ||
+    !synced ||
+    !activeFileId ||
+    !activeTextKey
+  ) {
+    return;
+  }
+
+  const yText = sharedDoc.getText(activeTextKey);
+  let decorationIds: string[] = [];
+
+  function publishSelection() {
+    if (editor!.getModel() !== model) return;
+
+    const selection = editor!.getSelection();
+    if (!selection) return;
+
+    const anchorOffset = model!.getOffsetAt({
+      lineNumber: selection.selectionStartLineNumber,
+      column: selection.selectionStartColumn,
+    });
+
+    const headOffset = model!.getOffsetAt({
+      lineNumber: selection.positionLineNumber,
+      column: selection.positionColumn,
+    });
+
+    awareness!.setLocalStateField("fileCursor", {
+      fileId: activeFileId,
+      anchor: Y.createRelativePositionFromTypeIndex(
+        yText,
+        Math.min(anchorOffset, yText.length)
+      ),
+      head: Y.createRelativePositionFromTypeIndex(
+        yText,
+        Math.min(headOffset, yText.length)
+      ),
+    });
+  }
+
+  function renderRemoteSelections() {
+    if (model!.isDisposed()) return;
+
+    const decorations: Monaco.IModelDeltaDecoration[] = [];
+
+    awareness!.getStates().forEach((state, clientId) => {
+      if (clientId === sharedDoc!.clientID) return;
+
+      const cursor = state.fileCursor;
+
+      // Ignore participants looking at another file.
+      if (
+        state.activeFileId !== activeFileId ||
+        !cursor ||
+        cursor.fileId !== activeFileId ||
+        !cursor.anchor ||
+        !cursor.head
+      ) {
+        return;
+      }
+
+      try {
+        const anchor = Y.createAbsolutePositionFromRelativePosition(
+          cursor.anchor,
+          sharedDoc!
+        );
+
+        const head = Y.createAbsolutePositionFromRelativePosition(
+          cursor.head,
+          sharedDoc!
+        );
+
+        if (
+          !anchor ||
+          !head ||
+          anchor.type !== yText ||
+          head.type !== yText
+        ) {
+          return;
+        }
+
+        const start = model!.getPositionAt(
+          Math.min(anchor.index, head.index)
+        );
+
+        const end = model!.getPositionAt(
+          Math.max(anchor.index, head.index)
+        );
+
+        const caret = model!.getPositionAt(head.index);
+
+        // Selected text.
+        if (anchor.index !== head.index) {
+          decorations.push({
+            range: {
+              startLineNumber: start.lineNumber,
+              startColumn: start.column,
+              endLineNumber: end.lineNumber,
+              endColumn: end.column,
+            },
+            options: {
+              className: `yRemoteSelection-${clientId}`,
+            },
+          });
+        }
+
+        // Cursor and the existing name label.
+        decorations.push({
+          range: {
+            startLineNumber: caret.lineNumber,
+            startColumn: caret.column,
+            endLineNumber: caret.lineNumber,
+            endColumn: caret.column,
+          },
+          options: {
+            beforeContentClassName:
+              `yRemoteSelectionHead-${clientId}`,
+            showIfCollapsed: true,
+          },
+        });
+      } catch {
+        // Ignore malformed or no-longer-resolvable presence data.
+      }
+    });
+
+    decorationIds = model!.deltaDecorations(
+      decorationIds,
+      decorations
+    );
+  }
+
+  // Publish the file and clear any previous cursor atomically.
+  awareness.setLocalState({
+    ...awareness.getLocalState(),
+    activeFileId,
+    fileCursor: null,
+  });
+
+  awareness.on("change", renderRemoteSelections);
+
+  const cursorListener = editor.onDidChangeCursorSelection(
+    publishSelection
+  );
+
+  // Re-resolve relative positions after text changes.
+  // The binding effect was registered first, so Monaco updates first.
+  yText.observe(renderRemoteSelections);
+
+  publishSelection();
+  renderRemoteSelections();
+
+  let cleaned = false;
+
+const cleanup = () => {
+  if (cleaned) return;
+  cleaned = true;
+
+  documentCleanupsRef.current.delete(cleanup);
+
+  cursorListener.dispose();
+  yText.unobserve(renderRemoteSelections);
+  awareness.off("change", renderRemoteSelections);
+
+  if (!model.isDisposed()) {
+    model.deltaDecorations(decorationIds, []);
+  }
+
+  const localState = awareness.getLocalState();
+
+  if (localState) {
+    awareness.setLocalState({
+      ...localState,
+      activeFileId: null,
+      fileCursor: null,
+    });
+  }
+};
+
+documentCleanupsRef.current.add(cleanup);
+
+return cleanup;
+}, [
+  editor,
+  sharedDoc,
+  activeFileId,
+  activeTextKey,
+  synced,
+]);
 
   const cursorStyles = users
     .map(
@@ -495,13 +1067,13 @@ export default function CollaborativeEditor({
 
   const output = runResult
     ? [
-        runResult.stdout,
-        runResult.compileOutput,
-        runResult.stderr,
-        runResult.message,
-      ]
-        .filter(Boolean)
-        .join("\n")
+      runResult.stdout,
+      runResult.compileOutput,
+      runResult.stderr,
+      runResult.message,
+    ]
+      .filter(Boolean)
+      .join("\n")
     : "";
 
   return (
@@ -524,25 +1096,23 @@ export default function CollaborativeEditor({
           </span>
 
           <span
-            className={`badge ${
-              role === "owner"
+            className={`badge ${role === "owner"
                 ? "badge-blue"
                 : role === "editor"
                   ? "badge-muted"
                   : "badge-amber"
-            }`}
+              }`}
           >
             {role.toUpperCase()}
           </span>
 
           <span
-            className={`badge ${
-              connectionError
+            className={`badge ${connectionError
                 ? "badge-rose"
                 : status === "connected" && authenticated
                   ? "badge-emerald"
                   : "badge-amber"
-            }`}
+              }`}
             aria-live="polite"
           >
             {connectionError
@@ -567,7 +1137,13 @@ export default function CollaborativeEditor({
                 }}
               >
                 ● {user.name}
-                {user.isMe ? " (you)" : ""}
+{user.isMe ? " (you)" : ""}
+
+<span style={{ marginLeft: 6, opacity: 0.75, fontSize: 11 }}>
+  ·{" "}
+  {files.find((file) => file.id === user.fileId)?.name ??
+    "Choosing a file"}
+</span>
               </span>
             ))}
           </div>
@@ -677,7 +1253,7 @@ export default function CollaborativeEditor({
           <div className="editor-toolbar">
             <div className="editor-tab-badge">
               <FileCode size={14} color="var(--accent-primary)" />
-              <span>{language === "python" ? "main.py" : "main.js"}</span>
+              <span>{activeFile?.name ?? "Loading files..."}</span>
             </div>
 
             <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 11, color: "var(--text-muted)" }}>
@@ -698,32 +1274,59 @@ export default function CollaborativeEditor({
           )}
 
           {/* Monaco Host Container */}
-          <div className="monaco-host-container" ref={editorContainerRef}>
-            <MonacoEditor
-              height="100%"
-              width="100%"
-              language={language}
-              theme="vs-dark"
-              defaultValue=""
-              onMount={(editorInstance) => {
-                setEditor(editorInstance);
-                editorInstance.layout();
-              }}
-              options={{
-                minimap: { enabled: false },
-                fontSize: 14,
-                fontFamily: "var(--font-mono)",
-                automaticLayout: true,
-                padding: { top: 16, bottom: 16 },
-                readOnly: !canEdit,
-                scrollBeyondLastLine: false,
-                renderLineHighlight: "all",
-                cursorBlinking: "smooth",
-                smoothScrolling: true,
-              }}
-            />
-          </div>
+          {/* Workspace file explorer and code editor */}
+          <div
+            style={{
+              display: "flex",
+              flex: 1,
+              minHeight: 0,
+              minWidth: 0,
+            }}
+          >
+            <FileExplorer
+  entries={entries}
+  activeFileId={activeFileId}
+  canEdit={canEdit}
+  language={language}
+  onSelect={setActiveFileId}
+  onCreate={createFile}
+  onCreateFolder={createFolder}
+  onRename={renameFile}
+  onDelete={deleteFile}
+  onRenameFolder={renameFolder}
+onDeleteFolder={deleteFolder}
+/>
 
+            <div
+              className="monaco-host-container"
+              ref={editorContainerRef}
+              style={{ flex: 1, minWidth: 0 }}
+            >
+              <MonacoEditor
+                height="100%"
+                width="100%"
+                language={language}
+                theme="vs-dark"
+                defaultValue=""
+                onMount={(editorInstance) => {
+                  setEditor(editorInstance);
+                  editorInstance.layout();
+                }}
+                options={{
+                  minimap: { enabled: false },
+                  fontSize: 14,
+                  fontFamily: "var(--font-mono)",
+                  automaticLayout: true,
+                  padding: { top: 16, bottom: 16 },
+                  readOnly: !canEdit || !activeFile,
+                  scrollBeyondLastLine: false,
+                  renderLineHighlight: "all",
+                  cursorBlinking: "smooth",
+                  smoothScrolling: true,
+                }}
+              />
+            </div>
+          </div>
           {/* Console / Terminal Execution Drawer */}
           <div className="workspace-console-pane">
             <div className="console-header-tabs">
@@ -760,14 +1363,19 @@ export default function CollaborativeEditor({
 
               <div className="console-actions-right">
                 <button
-                  type="button"
-                  className="btn btn-primary btn-sm"
-                  onClick={runCode}
-                  disabled={isRunning || !editor || !canEdit}
-                >
-                  <Play size={13} />
-                  {isRunning ? "Running..." : "Run code"}
-                </button>
+  type="button"
+  className="btn btn-primary btn-sm"
+  onClick={runCode}
+  disabled={
+    isRunning ||
+    !editor ||
+    !canEdit ||
+    !activeFile
+  }
+>
+  <Play size={13} />
+  {isRunning ? "Running..." : "Run code"}
+</button>
 
                 <button
                   type="button"
@@ -817,9 +1425,8 @@ export default function CollaborativeEditor({
                     <>
                       <div className="output-meta-row">
                         <span
-                          className={`badge ${
-                            runResult.statusId === 3 ? "badge-emerald" : "badge-rose"
-                          }`}
+                          className={`badge ${runResult.statusId === 3 ? "badge-emerald" : "badge-rose"
+                            }`}
                         >
                           {runResult.status}
                         </span>

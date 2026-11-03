@@ -2,13 +2,16 @@
 
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import dynamic from "next/dynamic";
 import {
   ArrowRight,
   AlertCircle,
+  Trash2,
 } from "lucide-react";
+
+
 
 const CollaborativeEditor = dynamic(
   () => import("./CollaborativeEditor"),
@@ -40,6 +43,54 @@ export default function RoomContent() {
   const [room, setRoom] = useState<Room | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+  const router = useRouter();
+
+const [deleting, setDeleting] = useState(false);
+const [deleteError, setDeleteError] = useState("");
+
+async function deleteRoom() {
+  if (!room || room.role !== "owner" || deleting) return;
+
+  const confirmed = window.confirm(
+    `Permanently delete "${room.name}"?\n\n` +
+      "Its saved code and chat history will be removed, " +
+      "and its invite links will stop working."
+  );
+
+  if (!confirmed) return;
+
+  setDeleting(true);
+  setDeleteError("");
+
+  try {
+    const response = await fetch(
+      `${API_URL}/api/rooms/${encodeURIComponent(shareToken)}`,
+      {
+        method: "DELETE",
+        credentials: "include",
+      }
+    );
+
+    if (!response.ok) {
+      const data = await response.json().catch(() => null);
+
+      throw new Error(
+        data?.error ?? "Could not delete the room."
+      );
+    }
+
+    router.replace("/my-rooms");
+    router.refresh();
+  } catch (err) {
+    setDeleteError(
+      err instanceof Error
+        ? err.message
+        : "Could not delete the room."
+    );
+
+    setDeleting(false);
+  }
+}
 
   // Name entered in the join form, initialized from session storage if present
   const [guestName, setGuestName] = useState(() => {
@@ -234,6 +285,35 @@ export default function RoomContent() {
             </button>
           </form>
 
+            {/* Room join page: owner-only deletion controls */}
+{room.role === "owner" && (
+  <div style={{ marginTop: 20 }}>
+    {deleteError && (
+      <div
+        className="alert-box alert-error"
+        role="alert"
+        style={{ marginBottom: 12 }}
+      >
+        <AlertCircle size={15} />
+        <span>{deleteError}</span>
+      </div>
+    )}
+
+    <button
+      type="button"
+      className="btn btn-secondary"
+      onClick={deleteRoom}
+      disabled={deleting}
+      style={{
+        width: "100%",
+        color: "var(--accent-rose, #dc2626)",
+      }}
+    >
+      <Trash2 size={16} />
+      {deleting ? "Deleting room..." : "Delete room"}
+    </button>
+  </div>
+)}
           <p style={{ marginTop: 24, fontSize: 12, color: "var(--text-muted)" }}>
             {room.role === "viewer"
               ? "Viewers can observe live code changes and chat in the side panel."

@@ -9,6 +9,10 @@ import {
 } from "../services/roomAccess.js";
 import { error } from "node:console";
 
+import mongoose from "mongoose";
+import { ChatMessage } from "../models/ChatMessage.js";
+import type { Server as SocketIOServer } from "socket.io";
+
 const router = Router();
 
 const createRoomSchema = z.object({
@@ -228,6 +232,86 @@ router.get("/:shareToken", async (req, res) => {
     language: room.language,
     createdAt: room.createdAt,
   });
+});
+
+// Delete a room owned by the signed-in user.
+router.delete("/:shareToken", async (req, res, next) => {
+  const allowedOrigin =
+    process.env.WEB_ORIGIN ?? "http://localhost:3000";
+
+  if (req.get("origin") !== allowedOrigin) {
+    return res.status(403).json({
+      error: "Request origin is not allowed.",
+    });
+  }
+
+  try {
+    const user = await getSessionUser(req);
+
+    if (!user) {
+      return res.status(401).json({
+        error: "Please sign in to delete a room.",
+      });
+    }
+
+    const room = await Room.findOne({
+      $or: [
+        { shareToken: req.params.shareToken },
+        { viewerToken: req.params.shareToken },
+      ],
+    });
+
+    if (!room) {
+      return res.status(404).json({
+        error: "Room not found.",
+      });
+    }
+
+    if (room.ownerId?.toString() !== user.id) {
+      return res.status(403).json({
+        error: "Only the room owner can delete this room.",
+      });
+    }
+
+    // Remove access first. New access-token requests will now fail.
+    const deleted = await Room.deleteOne({
+      _id: room._id,
+      ownerId: user.id,
+    });
+
+    if (!deleted.deletedCount) {
+      return res.status(404).json({
+        error: "Room has already been deleted.",
+      });
+    }
+
+    const io = req.app.get("chatIo") as
+      | SocketIOServer
+      | undefined;
+
+    const channel = `chat:${room.id}`;
+
+    io?.to(channel).emit("room:deleted", {
+      roomId: room.id,
+    });
+
+    io?.in(channel).disconnectSockets(true);
+
+    // Your realtime server stores code under the editor share token.
+    await Promise.all([
+      mongoose.connection
+        .collection<{ _id: string }>("room_documents")
+        .deleteOne({ _id: room.shareToken }),
+
+      ChatMessage.deleteMany({
+        roomId: room._id,
+      }).exec(),
+    ]);
+
+    return res.status(204).end();
+  } catch (err) {
+    return next(err);
+  }
 });
 
 export default router;

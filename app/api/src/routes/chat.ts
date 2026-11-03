@@ -122,6 +122,19 @@ router.post("/", async (req, res, next) => {
   text: result.data.text,
 });
 
+// The room might have been deleted after requireChatAccess ran.
+const stillExists = await Room.exists({
+  _id: res.locals.chatRoomId,
+});
+
+if (!stillExists) {
+  await ChatMessage.deleteOne({ _id: message._id });
+
+  return res.status(404).json({
+    error: "This room has been deleted.",
+  });
+}
+
 const savedMessage = {
   id: message.id,
   name: message.name,
