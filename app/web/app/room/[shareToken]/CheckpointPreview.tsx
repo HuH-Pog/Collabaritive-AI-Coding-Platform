@@ -2,6 +2,16 @@
 
 import { useEffect, useState } from "react";
 import type * as Y from "yjs";
+import {
+  ArrowLeft,
+  RotateCcw,
+  FileCode,
+  GitCompare,
+  Eye,
+  AlertCircle,
+  CheckCircle2,
+  Lock,
+} from "lucide-react";
 import CheckpointCompare from "./CheckpointCompare";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
@@ -59,7 +69,8 @@ export default function CheckpointPreview({
   const [selectedId, setSelectedId] = useState("");
   const [error, setError] = useState("");
   const [restoring, setRestoring] = useState(false);
-const [restoreMessage, setRestoreMessage] = useState("");
+  const [restoreMessage, setRestoreMessage] = useState("");
+  const [activeTab, setActiveTab] = useState<"preview" | "compare">("preview");
 
   useEffect(() => {
     const controller = new AbortController();
@@ -112,124 +123,186 @@ const [restoreMessage, setRestoreMessage] = useState("");
   const selectedFile = byId.get(selectedId);
 
   async function restoreCheckpoint() {
-  if (!checkpoint || !canRestore || !ready || restoring) return;
+    if (!checkpoint || !canRestore || !ready || restoring) return;
 
-  const confirmed = window.confirm(
-    `Restore "${checkpoint.name}" for everyone in this room?\n\n` +
-    "This replaces the live files and folders. Your current project " +
-    'will first be saved as "Before restore".'
-  );
-
-  if (!confirmed) return;
-
-  setRestoring(true);
-  setRestoreMessage("");
-
-  try {
-    const token = await getToken();
-    const response = await fetch(
-      `${API_URL}/api/checkpoints/${encodeURIComponent(checkpointId)}/restore`,
-      {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-      }
+    const confirmed = window.confirm(
+      `Restore "${checkpoint.name}" for everyone in this room?\n\n` +
+      "This replaces live files and folders. Your current project " +
+      'will first be saved automatically as "Before restore".'
     );
 
-    const data = await response.json();
+    if (!confirmed) return;
 
-    if (!response.ok) {
-      throw new Error(data.error ?? "Restore failed.");
+    setRestoring(true);
+    setRestoreMessage("");
+
+    try {
+      const token = await getToken();
+      const response = await fetch(
+        `${API_URL}/api/checkpoints/${encodeURIComponent(checkpointId)}/restore`,
+        {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error ?? "Restore failed.");
+      }
+
+      setRestoreMessage(`${data.message} Recovery checkpoint saved.`);
+    } catch (err) {
+      setRestoreMessage(err instanceof Error ? err.message : "Restore failed.");
+    } finally {
+      setRestoring(false);
     }
-
-    setRestoreMessage(`${data.message} Recovery checkpoint saved.`);
-  } catch (err) {
-    setRestoreMessage(err instanceof Error ? err.message : "Restore failed.");
-  } finally {
-    setRestoring(false);
   }
-}
 
   return (
-    <section aria-label="Checkpoint preview" style={{ display: "grid", gap: 10 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        <button
-          type="button"
-          className="btn btn-secondary btn-sm"
-          onClick={onBack}
-        >
-          Back to history
-        </button>
-        <strong>{checkpoint?.name ?? "Checkpoint preview"}</strong>
-        <span className="badge badge-muted">Read only</span>
+    <section aria-label="Checkpoint details" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      {/* Header bar */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8, paddingBottom: 10, borderBottom: "1px solid var(--border-default)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={onBack}
+            title="Back to all checkpoints"
+          >
+            <ArrowLeft size={13} />
+            Back
+          </button>
+
+          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
+            {checkpoint?.name ?? "Checkpoint details"}
+          </span>
+
+          <span className="badge badge-muted" style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+            <Lock size={10} />
+            Snapshot
+          </span>
+        </div>
+
+        {checkpoint && canRestore && (
+          <button
+            type="button"
+            className="btn btn-danger btn-sm"
+            disabled={!ready || restoring}
+            onClick={restoreCheckpoint}
+            title="Restore snapshot (affects everyone in the room)"
+          >
+            <RotateCcw size={13} />
+            {restoring ? "Restoring..." : "Restore this checkpoint"}
+          </button>
+        )}
       </div>
 
-      {error && <p role="alert">{error}</p>}
-      {!error && !checkpoint && <p role="status">Loading saved files...</p>}
+      {error && (
+        <div className="alert-box alert-error" role="alert">
+          <AlertCircle size={14} />
+          <span>{error}</span>
+        </div>
+      )}
+
+      {restoreMessage && (
+        <div className="alert-box alert-info" role="status">
+          <CheckCircle2 size={14} />
+          <span>{restoreMessage}</span>
+        </div>
+      )}
+
+      {!error && !checkpoint && (
+        <p style={{ color: "var(--text-muted)", fontSize: 12 }}>Loading saved snapshot files...</p>
+      )}
 
       {checkpoint && (
         <>
-          <label htmlFor="checkpoint-file">Saved file</label>
-          <select
-            id="checkpoint-file"
-            className="form-input"
-            value={selectedId}
-            onChange={(event) => setSelectedId(event.target.value)}
-          >
-            {files.map((file) => (
-              <option key={file.id} value={file.id}>
-                {file.path}
-              </option>
-            ))}
-          </select>
+          {/* Navigation tabs to clearly separate Preview and Compare */}
+          <div className="checkpoint-tabs-nav">
+            <button
+              type="button"
+              className={`checkpoint-tab-btn ${activeTab === "preview" ? "is-active" : ""}`}
+              onClick={() => setActiveTab("preview")}
+            >
+              <Eye size={13} style={{ display: "inline", marginRight: 5, verticalAlign: "middle" }} />
+              Preview Saved Files ({files.length})
+            </button>
 
-          {selectedFile?.kind === "file" && (
-            selectedFile.content ? (
-              <pre
-                tabIndex={0}
-                aria-label={`Saved contents of ${selectedFile.name}`}
-                style={{
-                  margin: 0,
-                  padding: 12,
-                  maxHeight: 280,
-                  overflow: "auto",
-                  border: "1px solid var(--border-color, #ddd)",
-                  borderRadius: 6,
-                  fontFamily: "var(--font-mono, monospace)",
-                  tabSize: 4,
-                }}
-              >
-                <code>{selectedFile.content}</code>
-              </pre>
-            ) : (
-              <p>This file was empty when the checkpoint was saved.</p>
-            )
+            <button
+              type="button"
+              className={`checkpoint-tab-btn ${activeTab === "compare" ? "is-active" : ""}`}
+              onClick={() => setActiveTab("compare")}
+            >
+              <GitCompare size={13} style={{ display: "inline", marginRight: 5, verticalAlign: "middle" }} />
+              Compare with Live Room
+            </button>
+          </div>
+
+          {activeTab === "preview" && (
+            <div style={{ display: "grid", gap: 10 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <label htmlFor="checkpoint-file" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted)" }}>
+                  Select file:
+                </label>
+                <select
+                  id="checkpoint-file"
+                  className="form-select"
+                  style={{ flex: 1, fontSize: 12, padding: "5px 10px" }}
+                  value={selectedId}
+                  onChange={(event) => setSelectedId(event.target.value)}
+                >
+                  {files.map((file) => (
+                    <option key={file.id} value={file.id}>
+                      {file.path}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {selectedFile?.kind === "file" && (
+                selectedFile.content ? (
+                  <div style={{ border: "1px solid var(--border-default)", borderRadius: "var(--radius-xs)", overflow: "hidden", background: "var(--bg-workspace)" }}>
+                    <div style={{ padding: "6px 10px", background: "var(--bg-elevated)", borderBottom: "1px solid var(--border-default)", fontSize: 11, fontFamily: "var(--font-mono)", color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 6 }}>
+                      <FileCode size={12} />
+                      <span>{getEntryPath(selectedFile, byId)}</span>
+                    </div>
+                    <pre
+                      tabIndex={0}
+                      aria-label={`Saved contents of ${selectedFile.name}`}
+                      style={{
+                        margin: 0,
+                        padding: 12,
+                        maxHeight: 340,
+                        overflow: "auto",
+                        fontFamily: "var(--font-mono)",
+                        fontSize: 12,
+                        color: "var(--text-primary)",
+                        tabSize: 4,
+                      }}
+                    >
+                      <code>{selectedFile.content}</code>
+                    </pre>
+                  </div>
+                ) : (
+                  <p style={{ color: "var(--text-muted)", fontSize: 12 }}>This file was empty when the checkpoint was saved.</p>
+                )
+              )}
+            </div>
+          )}
+
+          {activeTab === "compare" && (
+            <CheckpointCompare
+              key={checkpoint.id}
+              savedEntries={checkpoint.entries}
+              doc={doc}
+              ready={ready}
+              preferredFileId={selectedId}
+            />
           )}
         </>
       )}
-
-{checkpoint && canRestore && (
-  <button
-    type="button"
-    className="btn btn-secondary btn-sm"
-    disabled={!ready || restoring}
-    onClick={restoreCheckpoint}
-  >
-    {restoring ? "Restoring..." : "Restore this checkpoint"}
-  </button>
-)}
-
-{restoreMessage && <p role="status">{restoreMessage}</p>}
-
-      {checkpoint && (
-  <CheckpointCompare
-    key={checkpoint.id}
-    savedEntries={checkpoint.entries}
-    doc={doc}
-    ready={ready}
-    preferredFileId={selectedId}
-  />
-)}
     </section>
-    
   );
 }

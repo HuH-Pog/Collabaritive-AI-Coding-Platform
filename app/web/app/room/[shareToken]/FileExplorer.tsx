@@ -11,6 +11,8 @@ import {
   Pencil,
   Plus,
   Trash2,
+  CornerDownRight,
+  X,
 } from "lucide-react";
 
 export type WorkspaceFile = {
@@ -63,9 +65,10 @@ export default function FileExplorer({
   const [targetFolderId, setTargetFolderId] = useState<string | null>(null);
   const [newKind, setNewKind] = useState<"file" | "folder">("file");
   const [newName, setNewName] = useState("");
+  const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState("");
 
-  // Moving a file has its own destination, independent of the create form.
+  // Moving a file has its own destination, independent of the create form
   const [movingFileId, setMovingFileId] = useState<string | null>(null);
   const [destinationId, setDestinationId] = useState<string | null>(null);
 
@@ -115,8 +118,12 @@ export default function FileExplorer({
   }
 
   function folderPath(id: string | null): string {
-    return folderChain(id).map((folder) => folder.name).join(" / ")
-      || "Project root";
+    return folderChain(id).map((folder) => folder.name).join("/") || "root";
+  }
+
+  function fullEntryPath(entry: WorkspaceEntry): string {
+    const parent = folderPath(entry.parentId);
+    return parent === "root" ? entry.name : `${parent}/${entry.name}`;
   }
 
   const folderOptions = entries
@@ -174,12 +181,14 @@ export default function FileExplorer({
     expandPath(selectedFolderId);
     setNewName("");
     setError("");
+    setIsCreating(false);
   }
 
   function startMove(file: WorkspaceFile) {
     setMovingFileId(file.id);
     setDestinationId(visibleParent(file));
     setError("");
+    setIsCreating(false);
   }
 
   function confirmMove() {
@@ -192,7 +201,6 @@ export default function FileExplorer({
       return;
     }
 
-    // Expand all ancestors so a deeply nested destination is visible.
     expandPath(destinationId);
     setTargetFolderId(destinationId);
     setMovingFileId(null);
@@ -210,8 +218,8 @@ export default function FileExplorer({
   function deleteEntry(entry: WorkspaceEntry) {
     const message =
       entry.kind === "folder"
-        ? `Delete "${entry.name}" and all files and folders inside it for everyone?`
-        : `Delete "${entry.name}" from this workspace for everyone?`;
+        ? `Delete folder "${entry.name}" and all files inside it for everyone?`
+        : `Delete file "${entry.name}" from this workspace for everyone?`;
 
     if (!window.confirm(message)) return;
 
@@ -238,28 +246,21 @@ export default function FileExplorer({
       const isFolder = entry.kind === "folder";
       const isExpanded = expanded.has(entry.id);
       const isActive = !isFolder && entry.id === activeFileId;
+      const fullPath = fullEntryPath(entry);
 
       return (
         <div key={entry.id}>
           <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 2,
-              paddingLeft: depth * 12,
-            }}
+            className={`explorer-row${isActive ? " is-active" : ""}`}
+            style={{ paddingLeft: depth * 14 + 4 }}
           >
             <button
               type="button"
-              className={`btn btn-sm ${isActive ? "btn-primary" : "btn-ghost"}`}
-              title={entry.name}
+              className="explorer-row-btn"
+              title={fullPath}
+              aria-label={fullPath}
               aria-expanded={isFolder ? isExpanded : undefined}
               aria-pressed={isFolder ? undefined : isActive}
-              style={{
-                flex: 1,
-                minWidth: 0,
-                justifyContent: "flex-start",
-              }}
               onClick={() => {
                 if (isFolder) {
                   toggleFolder(entry.id);
@@ -272,31 +273,30 @@ export default function FileExplorer({
             >
               {isFolder ? (
                 <>
-                  {isExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-                  <Folder size={14} style={{ flexShrink: 0 }} />
+                  {isExpanded ? (
+                    <ChevronDown size={13} style={{ flexShrink: 0, color: "var(--text-muted)" }} />
+                  ) : (
+                    <ChevronRight size={13} style={{ flexShrink: 0, color: "var(--text-muted)" }} />
+                  )}
+                  <Folder size={14} style={{ flexShrink: 0, color: "var(--text-muted)" }} />
                 </>
               ) : (
-                <FileCode size={14} style={{ flexShrink: 0 }} />
+                <FileCode size={14} style={{ flexShrink: 0, color: isActive ? "var(--text-primary)" : "var(--text-muted)" }} />
               )}
 
-              <span
-                style={{
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                }}
-              >
+              <span className="explorer-row-name">
                 {entry.name}
               </span>
             </button>
 
             {canEdit && (
-              <>
+              <div className="explorer-row-actions">
                 {entry.kind === "file" && (
                   <button
                     type="button"
                     className="btn btn-ghost btn-sm"
-                    style={{ padding: 5 }}
+                    style={{ padding: "2px 5px", fontSize: 11 }}
+                    title={`Move ${entry.name}`}
                     aria-label={`Move ${entry.name}`}
                     onClick={() => startMove(entry)}
                   >
@@ -307,30 +307,30 @@ export default function FileExplorer({
                 <button
                   type="button"
                   className="btn btn-ghost btn-sm"
-                  style={{ padding: 5 }}
+                  style={{ padding: "3px" }}
                   title={`Rename ${entry.kind}`}
                   aria-label={`Rename ${entry.name}`}
                   onClick={() => renameEntry(entry)}
                 >
-                  <Pencil size={13} />
+                  <Pencil size={12} />
                 </button>
 
                 <button
                   type="button"
                   className="btn btn-ghost btn-sm"
-                  style={{ padding: 5 }}
+                  style={{ padding: "3px" }}
                   disabled={entry.id === "main"}
                   title={
                     entry.id === "main"
-                      ? "The original file must remain in the room"
+                      ? "The original main file cannot be deleted"
                       : `Delete ${entry.kind}`
                   }
                   aria-label={`Delete ${entry.name}`}
                   onClick={() => deleteEntry(entry)}
                 >
-                  <Trash2 size={13} />
+                  <Trash2 size={12} />
                 </button>
-              </>
+              </div>
             )}
           </div>
 
@@ -341,74 +341,135 @@ export default function FileExplorer({
   }
 
   return (
-    <aside
-      aria-label="Project files"
-      style={{
-        width: 280,
-        minWidth: 220,
-        padding: 12,
-        overflow: "auto",
-        borderRight: "1px solid var(--border-color, #ddd)",
-      }}
-    >
-      {/* Workspace explorer: project root and file tree */}
-      <button
-        type="button"
-        className="btn btn-ghost btn-sm"
-        onClick={() => {
-          setTargetFolderId(null);
-          setError("");
-        }}
-      >
-        <Folder size={14} />
-        Project root
-      </button>
+    <aside className="workspace-explorer" aria-label="Project files">
+      {/* Explorer Header */}
+      <div className="explorer-header">
+        <span className="explorer-title">Files</span>
 
-      <div style={{ marginTop: 8 }}>{renderChildren(null, 0)}</div>
-
-      {/* Workspace explorer: move a file or create an item */}
-      {canEdit && (
-        movingFile ? (
-          <div style={{ display: "grid", gap: 8, marginTop: 16 }}>
-            <strong>Move {movingFile.name}</strong>
-
-            <label htmlFor="move-destination">Destination folder</label>
-            <select
-              id="move-destination"
-              className="form-input"
-              value={destinationId ?? ""}
-              onChange={(event) => {
-                setDestinationId(event.target.value || null);
+        {canEdit && (
+          <div className="explorer-quick-actions">
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              style={{ padding: "2px 6px" }}
+              title="Add file"
+              aria-label="Add file"
+              onClick={() => {
+                setNewKind("file");
+                setIsCreating(true);
+                setMovingFileId(null);
                 setError("");
               }}
             >
-              <option value="">Project root</option>
-
-              {!destinationExists && destinationId !== null && (
-                <option value={destinationId} disabled>
-                  Folder was deleted — choose another
-                </option>
-              )}
-
-              {folderOptions.map((folder) => (
-                <option key={folder.id} value={folder.id}>
-                  {folder.path}
-                </option>
-              ))}
-            </select>
-
-            <button
-              type="button"
-              className="btn btn-primary btn-sm"
-              disabled={!destinationExists || destinationId === movingFile.parentId}
-              onClick={confirmMove}
-            >
-              Move here
+              <Plus size={13} />
             </button>
 
             <button
               type="button"
               className="btn btn-ghost btn-sm"
+              style={{ padding: "2px 6px" }}
+              title="Add folder"
+              aria-label="Add folder"
+              onClick={() => {
+                setNewKind("folder");
+                setIsCreating(true);
+                setMovingFileId(null);
+                setError("");
+              }}
+            >
+              <FolderPlus size={13} />
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Explorer Tree Container */}
+      <div className="explorer-tree-container">
+        <div style={{ marginBottom: 4 }}>
+          <button
+            type="button"
+            className="explorer-row-btn"
+            style={{ fontWeight: 600, color: "var(--text-muted)" }}
+            onClick={() => {
+              setTargetFolderId(null);
+              setError("");
+            }}
+          >
+            <Folder size={14} style={{ color: "var(--text-muted)" }} />
+            <span>project /</span>
+          </button>
+        </div>
+
+        {renderChildren(null, 0)}
+      </div>
+
+      {/* Validation Error Message */}
+      {error && (
+        <div style={{ padding: "6px 10px", color: "var(--semantic-red)", fontSize: 11, background: "var(--semantic-red-bg)", borderTop: "1px solid var(--semantic-red-border)" }} role="alert">
+          {error}
+        </div>
+      )}
+
+      {/* Move File Form */}
+      {canEdit && movingFile && (
+        <div className="explorer-form-box">
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <span style={{ fontSize: 11, fontWeight: 600, color: "var(--text-primary)" }}>
+              Move {movingFile.name}
+            </span>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              style={{ padding: 2 }}
+              onClick={() => {
+                setMovingFileId(null);
+                setError("");
+              }}
+            >
+              <X size={12} />
+            </button>
+          </div>
+
+          <div className="explorer-destination-path">
+            Destination: <strong>{destinationId ? folderPath(destinationId) : "root"}</strong>
+          </div>
+
+          <select
+            id="move-destination"
+            className="form-select"
+            style={{ fontSize: 11, padding: "5px 8px" }}
+            value={destinationId ?? ""}
+            onChange={(event) => {
+              setDestinationId(event.target.value || null);
+              setError("");
+            }}
+          >
+            <option value="">Project root (/)</option>
+            {!destinationExists && destinationId !== null && (
+              <option value={destinationId} disabled>
+                Folder was deleted — select another
+              </option>
+            )}
+            {folderOptions.map((folder) => (
+              <option key={folder.id} value={folder.id}>
+                /{folder.path}
+              </option>
+            ))}
+          </select>
+
+          <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              style={{ flex: 1 }}
+              disabled={!destinationExists || destinationId === movingFile.parentId}
+              onClick={confirmMove}
+            >
+              Move here
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
               onClick={() => {
                 setMovingFileId(null);
                 setError("");
@@ -417,23 +478,35 @@ export default function FileExplorer({
               Cancel
             </button>
           </div>
-        ) : (
-          <form
-            onSubmit={createItem}
-            style={{ display: "grid", gap: 8, marginTop: 16 }}
-          >
-            <span style={{ fontSize: 12 }}>
-              Create in: <strong>{folderPath(selectedFolderId)}</strong>
-            </span>
+        </div>
+      )}
 
-            <select
-              className="form-input"
-              aria-label="Item type"
-              value={newKind}
-              onChange={(event) => {
-                setNewKind(event.target.value === "folder" ? "folder" : "file");
+      {/* Create File / Folder Form */}
+      {canEdit && isCreating && !movingFile && (
+        <form onSubmit={createItem} className="explorer-form-box">
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <span style={{ fontSize: 11, fontWeight: 600, color: "var(--text-primary)" }}>
+              New {newKind} in /{folderPath(selectedFolderId)}
+            </span>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              style={{ padding: 2 }}
+              onClick={() => {
+                setIsCreating(false);
                 setError("");
               }}
+            >
+              <X size={12} />
+            </button>
+          </div>
+
+          <div style={{ display: "flex", gap: 4 }}>
+            <select
+              className="form-select"
+              style={{ width: "auto", fontSize: 11, padding: "4px 6px" }}
+              value={newKind}
+              onChange={(e) => setNewKind(e.target.value === "folder" ? "folder" : "file")}
             >
               <option value="file">File</option>
               <option value="folder">Folder</option>
@@ -441,6 +514,7 @@ export default function FileExplorer({
 
             <input
               className="form-input"
+              style={{ flex: 1, fontSize: 11, padding: "4px 8px" }}
               aria-label={`New ${newKind} name`}
               placeholder={
                 newKind === "folder"
@@ -450,24 +524,30 @@ export default function FileExplorer({
               value={newName}
               maxLength={80}
               required
+              autoFocus
               onChange={(event) => {
                 setNewName(event.target.value);
                 setError("");
               }}
             />
+          </div>
 
-            <button type="submit" className="btn btn-secondary btn-sm">
-              {newKind === "folder" ? <FolderPlus size={14} /> : <Plus size={14} />}
-              Add {newKind}
+          <div style={{ display: "flex", gap: 6 }}>
+            <button type="submit" className="btn btn-primary btn-sm" style={{ flex: 1 }}>
+              Create
             </button>
-          </form>
-        )
-      )}
-
-      {error && (
-        <p role="alert" style={{ color: "#dc2626", fontSize: 12 }}>
-          {error}
-        </p>
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={() => {
+                setIsCreating(false);
+                setError("");
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
       )}
     </aside>
   );

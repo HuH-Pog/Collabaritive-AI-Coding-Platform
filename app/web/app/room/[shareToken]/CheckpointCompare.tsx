@@ -1,18 +1,10 @@
 "use client";
 
 import { useState } from "react";
-import dynamic from "next/dynamic";
 import type * as Y from "yjs";
+import { GitCompare, RefreshCw, AlertCircle, FileCode, CheckCircle2, ArrowRight } from "lucide-react";
 import type { WorkspaceEntry } from "./FileExplorer";
 import IndependentCodeCompare from "./IndependentCompare";
-
-const DiffEditor = dynamic(
-  () => import("@monaco-editor/react").then((module) => module.DiffEditor),
-  {
-    ssr: false,
-    loading: () => <p>Loading code comparison...</p>,
-  }
-);
 
 export type SnapshotEntry = {
   id: string;
@@ -135,6 +127,22 @@ function compareFiles(
   );
 }
 
+function getBadgeClass(kind: ChangeKind): string {
+  switch (kind) {
+    case "Added":
+      return "badge-emerald";
+    case "Deleted":
+      return "badge-rose";
+    case "Renamed":
+      return "badge-amber";
+    case "Moved":
+      return "badge-blue";
+    case "Edited":
+    default:
+      return "badge-muted";
+  }
+}
+
 export default function CheckpointCompare({
   savedEntries,
   doc,
@@ -161,63 +169,94 @@ export default function CheckpointCompare({
   const path = selected?.newPath ?? selected?.oldPath ?? "";
 
   return (
-    <section aria-label="Checkpoint comparison">
-      <button
-        type="button"
-        className="btn btn-secondary btn-sm"
-        onClick={compare}
-        disabled={!ready || !doc}
-      >
-        {changes === null ? "Compare with current room" : "Refresh comparison"}
-      </button>
+    <section aria-label="Checkpoint comparison" style={{ display: "grid", gap: 12 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+        <button
+          type="button"
+          className="btn btn-secondary btn-sm"
+          onClick={compare}
+          disabled={!ready || !doc}
+        >
+          <GitCompare size={13} />
+          {changes === null ? "Compare with current room" : "Refresh comparison"}
+        </button>
 
-      {!ready && <p role="status">Waiting for the room to sync…</p>}
+        {!ready && (
+          <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+            Waiting for live room to sync...
+          </span>
+        )}
+      </div>
 
       {changes !== null && changes.length === 0 && (
-        <p role="status">All file paths and contents match this checkpoint.</p>
+        <div className="alert-box alert-info" role="status">
+          <CheckCircle2 size={14} />
+          <span>All file paths and file contents match this checkpoint exactly.</span>
+        </div>
       )}
 
       {changes !== null && changes.length > 0 && (
-        <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
-          <label htmlFor="changed-file">
-            Changed files ({changes.length})
-          </label>
+        <div style={{ display: "grid", gap: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <label htmlFor="changed-file" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted)", whiteSpace: "nowrap" }}>
+              Changed files ({changes.length}):
+            </label>
 
-          <select
-            id="changed-file"
-            className="form-input"
-            value={selectedId}
-            onChange={(event) => setSelectedId(event.target.value)}
-          >
-            {changes.map((file) => (
-              <option key={file.id} value={file.id}>
-                {file.newPath ?? file.oldPath} · {file.kinds.join(", ")}
-              </option>
-            ))}
-          </select>
+            <select
+              id="changed-file"
+              className="form-select"
+              style={{ flex: 1, fontSize: 12, padding: "5px 10px" }}
+              value={selectedId}
+              onChange={(event) => setSelectedId(event.target.value)}
+            >
+              {changes.map((file) => (
+                <option key={file.id} value={file.id}>
+                  {file.newPath ?? file.oldPath} ({file.kinds.join(", ")})
+                </option>
+              ))}
+            </select>
+          </div>
 
           {selected && (
-            <>
-              <div style={{ fontSize: 13 }}>
-                <div><strong>Checkpoint:</strong> {selected.oldPath ?? "(file absent)"}</div>
-                <div><strong>Current room:</strong> {selected.newPath ?? "(file absent)"}</div>
+            <div style={{ display: "grid", gap: 8 }}>
+              {/* Path and Change Badges Bar */}
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8, padding: "8px 12px", background: "var(--bg-elevated)", border: "1px solid var(--border-default)", borderRadius: "var(--radius-xs)" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+                  <span style={{ color: "var(--text-muted)" }}>Checkpoint:</span>
+                  <strong style={{ color: "var(--text-primary)", fontFamily: "var(--font-mono)" }}>
+                    {selected.oldPath ?? "(absent)"}
+                  </strong>
+                  <ArrowRight size={12} color="var(--text-muted)" />
+                  <span style={{ color: "var(--text-muted)" }}>Current:</span>
+                  <strong style={{ color: "var(--text-primary)", fontFamily: "var(--font-mono)" }}>
+                    {selected.newPath ?? "(deleted)"}
+                  </strong>
+                </div>
+
+                <div style={{ display: "flex", gap: 4 }}>
+                  {selected.kinds.map((kind) => (
+                    <span key={kind} className={`badge ${getBadgeClass(kind)}`}>
+                      {kind}
+                    </span>
+                  ))}
+                </div>
               </div>
 
               {selected.original === selected.modified ? (
-                <p>
+                <div style={{ padding: 12, background: "var(--bg-workspace)", border: "1px solid var(--border-default)", borderRadius: "var(--radius-xs)", fontSize: 12, color: "var(--text-muted)" }}>
                   {selected.oldPath && selected.newPath
-                    ? "The path changed. File contents are identical."
+                    ? "The path or location changed. File contents are identical."
                     : "This file is empty."}
-                </p>
+                </div>
               ) : (
                 <IndependentCodeCompare
-  key={selected.id}
-  original={selected.original}
-  modified={selected.modified}
-  language={path.endsWith(".py") ? "python" : "javascript"}
-/>
+                  key={selected.id}
+                  original={selected.original}
+                  modified={selected.modified}
+                  language={path.endsWith(".py") ? "python" : "javascript"}
+                />
               )}
-            </>
+            </div>
           )}
         </div>
       )}
