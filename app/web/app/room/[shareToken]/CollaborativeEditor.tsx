@@ -7,6 +7,7 @@ import * as Y from "yjs";
 import { HocuspocusProvider } from "@hocuspocus/provider";
 import { MonacoBinding } from "y-monaco";
 import type { editor as Monaco } from "monaco-editor";
+import { useEditorTabs } from "./useEditorTabs";
 import {
   Play,
   RotateCcw,
@@ -147,9 +148,13 @@ export default function CollaborativeEditor({
 
   const [sharedDoc, setSharedDoc] = useState<Y.Doc | null>(null);
   const [files, setFiles] = useState<WorkspaceFile[]>([]);
-  const [activeFileId, setActiveFileId] = useState<string | null>(
-    "main"
-  );
+  const {
+  openFileIds,
+  activeFileId,
+  openFile,
+  closeTab,
+  syncTabsWithFiles,
+} = useEditorTabs();
   const [synced, setSynced] = useState(false);
 
   const isViewer = role === "viewer";
@@ -160,6 +165,8 @@ export default function CollaborativeEditor({
     synced;
 
     const [entries, setEntries] = useState<WorkspaceEntry[]>([]);
+
+    
 
   // Abort execution when shareToken changes or on unmount
   useEffect(() => {
@@ -228,11 +235,7 @@ function updateFiles() {
   setEntries(nextEntries);
   setFiles(nextFiles);
 
-  setActiveFileId((current) =>
-    nextFiles.some((file) => file.id === current)
-      ? current
-      : nextFiles[0]?.id ?? null
-  );
+  syncTabsWithFiles(nextFiles.map((file) => file.id))
 }
 
     fileMap.observe(updateFiles);
@@ -371,8 +374,7 @@ function updateFiles() {
     providerRef.current = null;
   }
 };
-  }, [shareToken, editor, initialGuestName, documentName]);
-
+  }, [shareToken, editor, initialGuestName, documentName, syncTabsWithFiles]);
   const activeFile =
     files.find((file) => file.id === activeFileId) ?? null;
 
@@ -477,7 +479,7 @@ return cleanup;
       textKey: `file:${id}`,
     });
 
-    setActiveFileId(id);
+    openFile(id);
   }
 
   return null;
@@ -550,6 +552,58 @@ function createFolder(
 
       return null;
     }
+
+    function moveFile(
+  fileId: string,
+  destinationId: string | null
+): string | null {
+  if (!sharedDoc || !canEdit) {
+    return "Connect as an editor to move files.";
+  }
+
+  const fileMap = sharedDoc.getMap<WorkspaceEntry>("files");
+  const file = fileMap.get(fileId);
+
+  if (!file || file.kind !== "file") {
+    return "This file no longer exists.";
+  }
+
+  if (destinationId !== null) {
+    const destination = fileMap.get(destinationId);
+
+    if (destination?.kind !== "folder") {
+      return "That folder no longer exists. Select another destination.";
+    }
+  }
+
+  if (file.parentId === destinationId) {
+    return "This file is already in that folder.";
+  }
+
+  // Match the explorer: an entry whose parent disappeared is shown at root.
+  const duplicate = Array.from(fileMap.values()).some((entry) => {
+    if (entry.id === fileId) return false;
+
+    const visibleParent =
+      entry.parentId !== null &&
+      fileMap.get(entry.parentId)?.kind === "folder"
+        ? entry.parentId
+        : null;
+
+    return (
+      visibleParent === destinationId &&
+      entry.name.toLowerCase() === file.name.toLowerCase()
+    );
+  });
+
+  if (duplicate) {
+    return `An item named "${file.name}" already exists in that folder.`;
+  }
+
+  // Preserve the stable file ID and the Y.Text key used by Monaco.
+  fileMap.set(fileId, { ...file, parentId: destinationId });
+  return null;
+}
 
     function deleteFile(fileId: string): string | null {
       if (!sharedDoc || !canEdit) {
@@ -742,7 +796,7 @@ function deleteFolder(folderId: string): string | null {
     }
   }
 
-  async function runCode() {
+  async function runCode(mode: "file" | "project") {
     if (isViewer) {
       setRunError("Viewers cannot run code.");
       return;
@@ -761,16 +815,31 @@ function deleteFolder(folderId: string): string | null {
   return;
 }
 
+    setRunError("");
+setRunResult(null);
+setConsoleTab("output");
+
+let payload:
+  | { code: string }
+  | { project: ReturnType<typeof buildProjectPayload> };
+
+try {
+  if (mode === "project") {
+    payload = { project: buildProjectPayload(sharedDoc) };
+  } else {
     const code = editor.getValue();
 
-    setRunError("");
-    setRunResult(null);
-    setConsoleTab("output");
-
     if (!code.trim()) {
-      setRunError("Write some code in the editor first.");
+      setRunError("Write some code in the selected file first.");
       return;
     }
+
+    payload = { code };
+  }
+} catch (err) {
+  setRunError(err instanceof Error ? err.message : "Could not read project.");
+  return;
+}
 
     const controller = new AbortController();
     runControllerRef.current = controller;
@@ -800,10 +869,10 @@ function deleteFolder(folderId: string): string | null {
         },
         signal: controller.signal,
         body: JSON.stringify({
-          shareToken,
-          code,
-          stdin,
-        }),
+  shareToken,
+  stdin,
+  ...payload,
+}),
       });
 
       const data = await response.json();
@@ -834,6 +903,48 @@ function deleteFolder(folderId: string): string | null {
       }
     }
   }
+  function buildProjectPayload(doc: Y.Doc) {
+  const items = doc.getMap<WorkspaceEntry>("files");
+  const projectFiles: { path: string; content: string }[] = [];
+  let entryPath: string | null = null;
+
+  for (const file of items.values()) {
+    if (file.kind !== "file") continue;
+
+    const parts = [file.name];
+    const visited = new Set([file.id]);
+    let parentId = file.parentId;
+
+    while (parentId !== null) {
+      if (visited.has(parentId)) {
+        throw new Error(`Folder cycle found for "${file.name}".`);
+      }
+
+      const parent = items.get(parentId);
+
+      // Match the explorer: an item with a missing parent appears at root.
+      if (!parent || parent.kind !== "folder") break;
+
+      visited.add(parentId);
+      parts.unshift(parent.name);
+      parentId = parent.parentId;
+    }
+
+    const path = parts.join("/");
+    projectFiles.push({
+      path,
+      content: doc.getText(file.textKey).toString(),
+    });
+
+    if (file.id === "main") entryPath = path;
+  }
+
+  if (!entryPath) {
+    throw new Error("The original project entry file is missing.");
+  }
+
+  return { entryPath, files: projectFiles };
+}
   
   // Share and display cursor positions for the selected file.
 useEffect(() => {
@@ -1250,18 +1361,47 @@ return cleanup;
           }}
         >
           {/* File Toolbar */}
-          <div className="editor-toolbar">
-            <div className="editor-tab-badge">
-              <FileCode size={14} color="var(--accent-primary)" />
-              <span>{activeFile?.name ?? "Loading files..."}</span>
-            </div>
+          {/* Workspace editor: open files for this participant */}
+<div className="editor-toolbar">
+  <nav className="workspace-tabs" aria-label="Open files">
+    {openFileIds.map((id) => {
+      const file = files.find((item) => item.id === id);
+      if (!file) return null;
 
-            <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 11, color: "var(--text-muted)" }}>
-              <span>Auto-saving CRDT</span>
-              <span>·</span>
-              <span>Monaco vs-dark</span>
-            </div>
-          </div>
+      const isActive = id === activeFileId;
+
+      return (
+        <div
+          key={id}
+          className={`workspace-tab${isActive ? " is-active" : ""}`}
+        >
+          <button
+            type="button"
+            className="workspace-tab-select"
+            aria-pressed={isActive}
+            title={file.name}
+            onClick={() => openFile(id)}
+          >
+            <FileCode size={14} aria-hidden="true" />
+            <span>{file.name}</span>
+          </button>
+
+          {openFileIds.length > 1 && (
+            <button
+              type="button"
+              className="workspace-tab-close"
+              aria-label={`Close tab ${file.name}`}
+              title={`Close tab ${file.name}`}
+              onClick={() => closeTab(id)}
+            >
+              ×
+            </button>
+          )}
+        </div>
+      );
+    })}
+  </nav>
+</div>
 
           {/* Read-Only Notice for Viewers */}
           {isViewer && (
@@ -1288,13 +1428,14 @@ return cleanup;
   activeFileId={activeFileId}
   canEdit={canEdit}
   language={language}
-  onSelect={setActiveFileId}
+  onSelect={openFile}
   onCreate={createFile}
   onCreateFolder={createFolder}
   onRename={renameFile}
   onDelete={deleteFile}
   onRenameFolder={renameFolder}
 onDeleteFolder={deleteFolder}
+onMoveFile={moveFile}
 />
 
             <div
@@ -1364,17 +1505,22 @@ onDeleteFolder={deleteFolder}
               <div className="console-actions-right">
                 <button
   type="button"
-  className="btn btn-primary btn-sm"
-  onClick={runCode}
-  disabled={
-    isRunning ||
-    !editor ||
-    !canEdit ||
-    !activeFile
-  }
+  className="btn btn-secondary btn-sm"
+  onClick={() => runCode("file")}
+  disabled={isRunning || !editor || !canEdit || !activeFile}
 >
   <Play size={13} />
-  {isRunning ? "Running..." : "Run code"}
+  Run file
+</button>
+
+<button
+  type="button"
+  className="btn btn-primary btn-sm"
+  onClick={() => runCode("project")}
+  disabled={isRunning || !editor || !canEdit || !activeFile}
+>
+  <Play size={13} />
+  Run project
 </button>
 
                 <button

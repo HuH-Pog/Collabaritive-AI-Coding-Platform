@@ -1320,16 +1320,56 @@ kbd {
   height: 100%;
 }
 
-.editor-toolbar {
-  height: 38px;
-  background: var(--bg-surface-secondary);
-  border-bottom: 1px solid var(--border-default);
+/* Room workspace: editor tabs */
+.workspace-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.workspace-tab {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  border-bottom: 2px solid transparent;
+  color: var(--text-muted);
+}
+
+.workspace-tab.is-active {
+  border-bottom-color: var(--accent-primary, #2563eb);
+  color: var(--text-primary);
+}
+
+.workspace-tab-select,
+.workspace-tab-close {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.workspace-tab-select {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 0 16px;
-  font-size: 12px;
-  flex-shrink: 0;
+  gap: 6px;
+  padding: 8px;
+  font: inherit;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.workspace-tab-close {
+  padding: 4px 7px;
+  border-radius: 4px;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.workspace-tab-close:hover {
+  background: var(--bg-secondary, #eef2f6);
 }
 
 .editor-tab-badge {

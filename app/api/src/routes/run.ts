@@ -3,6 +3,10 @@ import { rateLimit } from "express-rate-limit";
 import { setTimeout as delay } from "node:timers/promises";
 import { Room } from "../models/Room.js";
 import { verifyRoomToken } from "../services/roomAccess.js";
+import {
+  parseProject,
+  prepareProjectSubmission,
+} from "../services/projectRun.js";
 
 const router = Router();
 
@@ -38,23 +42,32 @@ function decode(value?: string | null) {
 }
 
 router.post("/", async (req, res) => {
-  const { shareToken, code, stdin = "" } = req.body ?? {};
+  const { shareToken, code, project, stdin = "" } = req.body ?? {};
+const isProjectRun = project !== undefined;
 
-  if (
-    typeof shareToken !== "string" ||
-    shareToken.length === 0 ||
-    shareToken.length > 100 ||
-    typeof code !== "string" ||
-    code.trim().length === 0 ||
-    Buffer.byteLength(code, "utf8") > 50_000 ||
-    typeof stdin !== "string" ||
-    Buffer.byteLength(stdin, "utf8") > 10_000
-  ) {
-    return res.status(400).json({
-      error:
-        "Provide a room token, non-empty code up to 50 KB, and input up to 10 KB.",
-    });
-  }
+if (
+  typeof shareToken !== "string" ||
+  !shareToken.length ||
+  shareToken.length > 100 ||
+  typeof stdin !== "string" ||
+  Buffer.byteLength(stdin, "utf8") > 10_000
+) {
+  return res.status(400).json({
+    error: "Provide a room token and input up to 10 KB.",
+  });
+}
+
+if (
+  (!isProjectRun &&
+    (typeof code !== "string" ||
+      !code.trim() ||
+      Buffer.byteLength(code, "utf8") > 50_000)) ||
+  (isProjectRun && code !== undefined)
+) {
+  return res.status(400).json({
+    error: "Send either a project or non-empty code up to 50 KB.",
+  });
+}
   const authorization = req.get("authorization");
 
 if (!authorization?.startsWith("Bearer ")) {
@@ -101,6 +114,30 @@ if (access.role === "viewer") {
       });
     }
 
+    // The signed token identifies the room. Also check the URL invite
+// supplied by the client belongs to the same room.
+if (shareToken !== room.shareToken && shareToken !== room.viewerToken) {
+  return res.status(403).json({ error: "Room access does not match." });
+}
+
+let source: { source_code: string; additional_files?: string };
+
+if (isProjectRun) {
+  let validated: ReturnType<typeof parseProject>;
+
+  try {
+    validated = parseProject(project, room.language);
+  } catch (err) {
+    return res.status(400).json({
+      error: err instanceof Error ? err.message : "Invalid project.",
+    });
+  }
+
+  source = await prepareProjectSubmission(validated, room.language);
+} else {
+  source = { source_code: Buffer.from(code, "utf8").toString("base64") };
+}
+
     // Use the room's language rather than trusting the client.
     const languageId = Number(
       room.language === "python"
@@ -113,8 +150,7 @@ if (access.role === "viewer") {
     }
 
     const baseUrl = (
-  process.env.JUDGE0_URL ??
-  "https://api.onlinecompiler.io/api/judge0"
+  process.env.JUDGE0_URL ?? "https://api.onlinecompiler.io/api/judge0"
 ).replace(/\/+$/, "");
 
     const headers = {
@@ -130,7 +166,7 @@ if (access.role === "viewer") {
         signal,
         body: JSON.stringify({
           language_id: languageId,
-          source_code: Buffer.from(code).toString("base64"),
+          ...source,
           stdin: Buffer.from(stdin).toString("base64"),
           cpu_time_limit: 3,
           wall_time_limit: 5,

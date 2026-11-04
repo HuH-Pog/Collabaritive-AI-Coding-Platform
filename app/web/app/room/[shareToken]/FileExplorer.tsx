@@ -1,14 +1,15 @@
 "use client";
 
 import { useState } from "react";
+import type { FormEvent, ReactNode } from "react";
 import {
   ChevronDown,
   ChevronRight,
   FileCode,
   Folder,
   FolderPlus,
-  Plus,
   Pencil,
+  Plus,
   Trash2,
 } from "lucide-react";
 
@@ -35,18 +36,13 @@ type Props = {
   canEdit: boolean;
   language: string;
   onSelect: (id: string) => void;
-  onCreate: (
-    name: string,
-    parentId: string | null
-  ) => string | null;
-  onCreateFolder: (
-    name: string,
-    parentId: string | null
-  ) => string | null;
+  onCreate: (name: string, parentId: string | null) => string | null;
+  onCreateFolder: (name: string, parentId: string | null) => string | null;
   onRename: (id: string, name: string) => string | null;
   onDelete: (id: string) => string | null;
   onRenameFolder: (id: string, name: string) => string | null;
-onDeleteFolder: (id: string) => string | null;
+  onDeleteFolder: (id: string) => string | null;
+  onMoveFile: (fileId: string, destinationId: string | null) => string | null;
 };
 
 export default function FileExplorer({
@@ -61,27 +57,92 @@ export default function FileExplorer({
   onDelete,
   onRenameFolder,
   onDeleteFolder,
-}: Props)  {
-  const [expanded, setExpanded] = useState<Set<string>>(
-    () => new Set()
-  );
-  const [targetFolderId, setTargetFolderId] = useState<
-    string | null
-  >(null);
+  onMoveFile,
+}: Props) {
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  const [targetFolderId, setTargetFolderId] = useState<string | null>(null);
+  const [newKind, setNewKind] = useState<"file" | "folder">("file");
   const [newName, setNewName] = useState("");
-  const [newKind, setNewKind] = useState<"file" | "folder">(
-    "file"
-  );
   const [error, setError] = useState("");
 
-  const targetFolder = entries.find(
-    (entry) =>
-      entry.id === targetFolderId &&
-      entry.kind === "folder"
-  );
+  // Moving a file has its own destination, independent of the create form.
+  const [movingFileId, setMovingFileId] = useState<string | null>(null);
+  const [destinationId, setDestinationId] = useState<string | null>(null);
 
-  // Fall back to root if the selected folder disappears.
-  const parentId = targetFolder?.id ?? null;
+  const byId = new Map(entries.map((entry) => [entry.id, entry] as const));
+
+  function visibleParent(entry: WorkspaceEntry): string | null {
+    if (entry.parentId === null) return null;
+
+    return byId.get(entry.parentId)?.kind === "folder"
+      ? entry.parentId
+      : null;
+  }
+
+  // Build the tree once per render. An item whose parent disappeared
+  // during a concurrent edit remains accessible at the project root.
+  const children = new Map<string | null, WorkspaceEntry[]>();
+
+  for (const entry of entries) {
+    const parent = visibleParent(entry);
+    const siblings = children.get(parent);
+
+    if (siblings) siblings.push(entry);
+    else children.set(parent, [entry]);
+  }
+
+  for (const siblings of children.values()) {
+    siblings.sort((a, b) => {
+      if (a.kind !== b.kind) return a.kind === "folder" ? -1 : 1;
+      return a.name.localeCompare(b.name) || a.id.localeCompare(b.id);
+    });
+  }
+
+  function folderChain(id: string | null): WorkspaceFolder[] {
+    const chain: WorkspaceFolder[] = [];
+    const visited = new Set<string>();
+
+    while (id !== null && !visited.has(id)) {
+      const entry = byId.get(id);
+      if (entry?.kind !== "folder") break;
+
+      visited.add(id);
+      chain.push(entry);
+      id = entry.parentId;
+    }
+
+    return chain.reverse();
+  }
+
+  function folderPath(id: string | null): string {
+    return folderChain(id).map((folder) => folder.name).join(" / ")
+      || "Project root";
+  }
+
+  const folderOptions = entries
+    .filter((entry): entry is WorkspaceFolder => entry.kind === "folder")
+    .map((folder) => ({ id: folder.id, path: folderPath(folder.id) }))
+    .sort((a, b) => a.path.localeCompare(b.path));
+
+  const selectedFolderId =
+    targetFolderId !== null && byId.get(targetFolderId)?.kind === "folder"
+      ? targetFolderId
+      : null;
+
+  const candidate = movingFileId === null ? undefined : byId.get(movingFileId);
+  const movingFile = candidate?.kind === "file" ? candidate : null;
+  const destinationExists =
+    destinationId === null || byId.get(destinationId)?.kind === "folder";
+
+  function expandPath(id: string | null) {
+    const chain = folderChain(id);
+
+    setExpanded((previous) => {
+      const next = new Set(previous);
+      for (const folder of chain) next.add(folder.id);
+      return next;
+    });
+  }
 
   function toggleFolder(id: string) {
     setTargetFolderId(id);
@@ -89,286 +150,191 @@ export default function FileExplorer({
 
     setExpanded((previous) => {
       const next = new Set(previous);
-
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
-
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
       return next;
     });
   }
 
-  function handleRename(file: WorkspaceFile) {
-    const name = window.prompt("Rename file:", file.name);
-    if (name === null) return;
+  function createItem(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!canEdit) return;
 
-    setError(onRename(file.id, name.trim()) ?? "");
-  }
+    const name = newName.trim();
+    const problem =
+      newKind === "file"
+        ? onCreate(name, selectedFolderId)
+        : onCreateFolder(name, selectedFolderId);
 
-  function handleDelete(file: WorkspaceFile) {
-    if (
-      !window.confirm(
-        `Delete "${file.name}" from this workspace?\n\n` +
-          "It will disappear for everyone in the room."
-      )
-    ) {
+    if (problem) {
+      setError(problem);
       return;
     }
 
-    setError(onDelete(file.id) ?? "");
+    expandPath(selectedFolderId);
+    setNewName("");
+    setError("");
   }
 
-  function handleRenameFolder(folder: WorkspaceFolder) {
-  const name = window.prompt("Rename folder:", folder.name);
-  if (name === null) return;
-
-  setError(onRenameFolder(folder.id, name.trim()) ?? "");
-}
-
-function handleDeleteFolder(folder: WorkspaceFolder) {
-  const idsToDelete = new Set<string>();
-  const pending = [folder.id];
-
-  while (pending.length > 0) {
-    const currentId = pending.pop()!;
-
-    if (idsToDelete.has(currentId)) continue;
-    idsToDelete.add(currentId);
-
-    for (const entry of entries) {
-      if (entry.parentId === currentId) {
-        pending.push(entry.id);
-      }
-    }
+  function startMove(file: WorkspaceFile) {
+    setMovingFileId(file.id);
+    setDestinationId(visibleParent(file));
+    setError("");
   }
 
-  const confirmed = window.confirm(
-    `Delete "${folder.name}" and everything inside it?\n\n` +
-      "All nested files and folders will disappear " +
-      "for everyone in this room."
-  );
+  function confirmMove() {
+    if (!canEdit || !movingFile) return;
 
-  if (!confirmed) return;
+    const problem = onMoveFile(movingFile.id, destinationId);
 
-  const problem = onDeleteFolder(folder.id);
-
-  if (problem) {
-    setError(problem);
-    return;
-  }
-
-  // Reset the creation location if it was inside this subtree.
-  if (
-    targetFolderId !== null &&
-    idsToDelete.has(targetFolderId)
-  ) {
-    setTargetFolderId(folder.parentId);
-  }
-
-  setExpanded((previous) => {
-    const next = new Set(previous);
-
-    for (const id of idsToDelete) {
-      next.delete(id);
+    if (problem) {
+      setError(problem);
+      return;
     }
 
-    return next;
-  });
+    // Expand all ancestors so a deeply nested destination is visible.
+    expandPath(destinationId);
+    setTargetFolderId(destinationId);
+    setMovingFileId(null);
+    setError("");
+  }
 
-  setError("");
-}
+  function renameEntry(entry: WorkspaceEntry) {
+    const name = window.prompt(`Rename ${entry.kind}:`, entry.name);
+    if (name === null) return;
 
-  function renderChildren(
-    folderId: string | null,
-    depth: number,
-    ancestors: Set<string>
-  ): React.ReactNode {
-    const children = entries
-      .filter((entry) => {
-  const parentExists =
-    entry.parentId !== null &&
-    entries.some(
-      (parent) =>
-        parent.id === entry.parentId &&
-        parent.kind === "folder"
-    );
+    const rename = entry.kind === "folder" ? onRenameFolder : onRename;
+    setError(rename(entry.id, name.trim()) ?? "");
+  }
 
-  // Show items whose parent disappeared at the project root.
-  const visibleParentId = parentExists ? entry.parentId : null;
+  function deleteEntry(entry: WorkspaceEntry) {
+    const message =
+      entry.kind === "folder"
+        ? `Delete "${entry.name}" and all files and folders inside it for everyone?`
+        : `Delete "${entry.name}" from this workspace for everyone?`;
 
-  return visibleParentId === folderId;
-})
-      .sort((a, b) => {
-        if (a.kind !== b.kind) {
-          return a.kind === "folder" ? -1 : 1;
-        }
+    if (!window.confirm(message)) return;
 
-        return a.name.localeCompare(b.name) ||
-          a.id.localeCompare(b.id);
-      });
+    const remove = entry.kind === "folder" ? onDeleteFolder : onDelete;
+    const problem = remove(entry.id);
 
-    return children.map((entry) => {
-      // Avoid recursion if malformed metadata contains a cycle.
-      if (ancestors.has(entry.id)) return null;
+    if (problem) {
+      setError(problem);
+      return;
+    }
 
-      const nextAncestors = new Set(ancestors);
-      nextAncestors.add(entry.id);
+    if (
+      entry.kind === "folder" &&
+      folderChain(selectedFolderId).some((folder) => folder.id === entry.id)
+    ) {
+      setTargetFolderId(visibleParent(entry));
+    }
 
-      if (entry.kind === "folder") {
-  const isExpanded = expanded.has(entry.id);
+    setError("");
+  }
 
-  return (
-    <div key={entry.id}>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 2,
-          paddingLeft: depth * 14,
-        }}
-      >
-        <button
-          type="button"
-          className="btn btn-ghost btn-sm"
-          aria-expanded={isExpanded}
-          title={entry.name}
-          onClick={() => toggleFolder(entry.id)}
-          style={{
-            flex: 1,
-            minWidth: 0,
-            justifyContent: "flex-start",
-            background:
-              parentId === entry.id
-                ? "var(--bg-secondary, #eef2f6)"
-                : undefined,
-          }}
-        >
-          {isExpanded ? (
-            <ChevronDown size={13} />
-          ) : (
-            <ChevronRight size={13} />
-          )}
-
-          <Folder size={14} style={{ flexShrink: 0 }} />
-
-          <span
-            style={{
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}
-          >
-            {entry.name}
-          </span>
-        </button>
-
-        {canEdit && (
-          <>
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm"
-              style={{ padding: 5 }}
-              aria-label={`Rename folder ${entry.name}`}
-              title="Rename folder"
-              onClick={() => handleRenameFolder(entry)}
-            >
-              <Pencil size={13} />
-            </button>
-
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm"
-              style={{ padding: 5 }}
-              aria-label={`Delete folder ${entry.name}`}
-              title="Delete empty folder"
-              onClick={() => handleDeleteFolder(entry)}
-            >
-              <Trash2 size={13} />
-            </button>
-          </>
-        )}
-      </div>
-
-      {isExpanded &&
-        renderChildren(entry.id, depth + 1, nextAncestors)}
-    </div>
-  );
-}
+  function renderChildren(parentId: string | null, depth: number): ReactNode {
+    return (children.get(parentId) ?? []).map((entry) => {
+      const isFolder = entry.kind === "folder";
+      const isExpanded = expanded.has(entry.id);
+      const isActive = !isFolder && entry.id === activeFileId;
 
       return (
-        <div
-          key={entry.id}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 2,
-            paddingLeft: depth * 14,
-          }}
-        >
-          <button
-            type="button"
-            className={`btn btn-sm ${
-              activeFileId === entry.id
-                ? "btn-primary"
-                : "btn-ghost"
-            }`}
-            aria-pressed={activeFileId === entry.id}
-            title={entry.name}
+        <div key={entry.id}>
+          <div
             style={{
-              flex: 1,
-              minWidth: 0,
-              justifyContent: "flex-start",
-            }}
-            onClick={() => {
-              setTargetFolderId(entry.parentId);
-              setError("");
-              onSelect(entry.id);
+              display: "flex",
+              alignItems: "center",
+              gap: 2,
+              paddingLeft: depth * 12,
             }}
           >
-            <FileCode size={14} style={{ flexShrink: 0 }} />
-
-            <span
+            <button
+              type="button"
+              className={`btn btn-sm ${isActive ? "btn-primary" : "btn-ghost"}`}
+              title={entry.name}
+              aria-expanded={isFolder ? isExpanded : undefined}
+              aria-pressed={isFolder ? undefined : isActive}
               style={{
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
+                flex: 1,
+                minWidth: 0,
+                justifyContent: "flex-start",
+              }}
+              onClick={() => {
+                if (isFolder) {
+                  toggleFolder(entry.id);
+                } else {
+                  setTargetFolderId(visibleParent(entry));
+                  setError("");
+                  onSelect(entry.id);
+                }
               }}
             >
-              {entry.name}
-            </span>
-          </button>
+              {isFolder ? (
+                <>
+                  {isExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                  <Folder size={14} style={{ flexShrink: 0 }} />
+                </>
+              ) : (
+                <FileCode size={14} style={{ flexShrink: 0 }} />
+              )}
 
-          {canEdit && (
-            <>
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm"
-                style={{ padding: 5 }}
-                aria-label={`Rename ${entry.name}`}
-                onClick={() => handleRename(entry)}
+              <span
+                style={{
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
               >
-                <Pencil size={13} />
-              </button>
+                {entry.name}
+              </span>
+            </button>
 
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm"
-                style={{ padding: 5 }}
-                disabled={entry.id === "main"}
-                aria-label={`Delete ${entry.name}`}
-                title={
-                  entry.id === "main"
-                    ? "The original file must remain"
-                    : "Delete file"
-                }
-                onClick={() => handleDelete(entry)}
-              >
-                <Trash2 size={13} />
-              </button>
-            </>
-          )}
+            {canEdit && (
+              <>
+                {entry.kind === "file" && (
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    style={{ padding: 5 }}
+                    aria-label={`Move ${entry.name}`}
+                    onClick={() => startMove(entry)}
+                  >
+                    Move
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  style={{ padding: 5 }}
+                  title={`Rename ${entry.kind}`}
+                  aria-label={`Rename ${entry.name}`}
+                  onClick={() => renameEntry(entry)}
+                >
+                  <Pencil size={13} />
+                </button>
+
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  style={{ padding: 5 }}
+                  disabled={entry.id === "main"}
+                  title={
+                    entry.id === "main"
+                      ? "The original file must remain in the room"
+                      : `Delete ${entry.kind}`
+                  }
+                  aria-label={`Delete ${entry.name}`}
+                  onClick={() => deleteEntry(entry)}
+                >
+                  <Trash2 size={13} />
+                </button>
+              </>
+            )}
+          </div>
+
+          {isFolder && isExpanded && renderChildren(entry.id, depth + 1)}
         </div>
       );
     });
@@ -385,7 +351,7 @@ function handleDeleteFolder(folder: WorkspaceFolder) {
         borderRight: "1px solid var(--border-color, #ddd)",
       }}
     >
-      {/* Workspace explorer: root and nested entries */}
+      {/* Workspace explorer: project root and file tree */}
       <button
         type="button"
         className="btn btn-ghost btn-sm"
@@ -393,102 +359,113 @@ function handleDeleteFolder(folder: WorkspaceFolder) {
           setTargetFolderId(null);
           setError("");
         }}
-        style={{ width: "100%", justifyContent: "flex-start" }}
       >
         <Folder size={14} />
         Project root
       </button>
 
-      <div style={{ marginTop: 8 }}>
-        {renderChildren(null, 0, new Set())}
-      </div>
+      <div style={{ marginTop: 8 }}>{renderChildren(null, 0)}</div>
 
-      {/* Workspace explorer: create a file or folder */}
+      {/* Workspace explorer: move a file or create an item */}
       {canEdit && (
-        <form
-          style={{ display: "grid", gap: 8, marginTop: 20 }}
-          onSubmit={(event) => {
-            event.preventDefault();
+        movingFile ? (
+          <div style={{ display: "grid", gap: 8, marginTop: 16 }}>
+            <strong>Move {movingFile.name}</strong>
 
-            const name = newName.trim();
-            const problem =
-              newKind === "file"
-                ? onCreate(name, parentId)
-                : onCreateFolder(name, parentId);
+            <label htmlFor="move-destination">Destination folder</label>
+            <select
+              id="move-destination"
+              className="form-input"
+              value={destinationId ?? ""}
+              onChange={(event) => {
+                setDestinationId(event.target.value || null);
+                setError("");
+              }}
+            >
+              <option value="">Project root</option>
 
-            if (problem) {
-              setError(problem);
-              return;
-            }
+              {!destinationExists && destinationId !== null && (
+                <option value={destinationId} disabled>
+                  Folder was deleted — choose another
+                </option>
+              )}
 
-            if (parentId) {
-              setExpanded((previous) => {
-                const next = new Set(previous);
-                next.add(parentId);
-                return next;
-              });
-            }
+              {folderOptions.map((folder) => (
+                <option key={folder.id} value={folder.id}>
+                  {folder.path}
+                </option>
+              ))}
+            </select>
 
-            setNewName("");
-            setError("");
-          }}
-        >
-          <span style={{ fontSize: 12 }}>
-            Create in: <strong>{targetFolder?.name ?? "Project root"}</strong>
-          </span>
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              disabled={!destinationExists || destinationId === movingFile.parentId}
+              onClick={confirmMove}
+            >
+              Move here
+            </button>
 
-          <select
-            className="form-input"
-            aria-label="Item type"
-            value={newKind}
-            onChange={(event) => {
-              setNewKind(event.target.value as "file" | "folder");
-              setError("");
-            }}
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={() => {
+                setMovingFileId(null);
+                setError("");
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <form
+            onSubmit={createItem}
+            style={{ display: "grid", gap: 8, marginTop: 16 }}
           >
-            <option value="file">File</option>
-            <option value="folder">Folder</option>
-          </select>
+            <span style={{ fontSize: 12 }}>
+              Create in: <strong>{folderPath(selectedFolderId)}</strong>
+            </span>
 
-          <input
-            className="form-input"
-            aria-label="New item name"
-            placeholder={
-              newKind === "folder"
-                ? "utils"
-                : language === "python"
-                  ? "helpers.py"
-                  : "helpers.js"
-            }
-            value={newName}
-            maxLength={80}
-            required
-            onChange={(event) => {
-              setNewName(event.target.value);
-              setError("");
-            }}
-          />
+            <select
+              className="form-input"
+              aria-label="Item type"
+              value={newKind}
+              onChange={(event) => {
+                setNewKind(event.target.value === "folder" ? "folder" : "file");
+                setError("");
+              }}
+            >
+              <option value="file">File</option>
+              <option value="folder">Folder</option>
+            </select>
 
-          <button
-            type="submit"
-            className="btn btn-secondary btn-sm"
-          >
-            {newKind === "folder" ? (
-              <FolderPlus size={14} />
-            ) : (
-              <Plus size={14} />
-            )}
+            <input
+              className="form-input"
+              aria-label={`New ${newKind} name`}
+              placeholder={
+                newKind === "folder"
+                  ? "utils"
+                  : language === "python" ? "helpers.py" : "helpers.js"
+              }
+              value={newName}
+              maxLength={80}
+              required
+              onChange={(event) => {
+                setNewName(event.target.value);
+                setError("");
+              }}
+            />
 
-            Add {newKind}
-          </button>
-        </form>
+            <button type="submit" className="btn btn-secondary btn-sm">
+              {newKind === "folder" ? <FolderPlus size={14} /> : <Plus size={14} />}
+              Add {newKind}
+            </button>
+          </form>
+        )
       )}
 
       {error && (
-        <p
-          role="alert"
-          style={{ color: "#dc2626", fontSize: 12 }}
-        >
+        <p role="alert" style={{ color: "#dc2626", fontSize: 12 }}>
           {error}
         </p>
       )}
