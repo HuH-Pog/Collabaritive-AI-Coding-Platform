@@ -6,6 +6,7 @@ import roomsRouter from "./routes/room.js";
 import runRouter from "../src/routes/run.js";
 import authRouter from "../src/routes/auth.js"
 import chatRouter from "./routes/chat.js";
+import checkpointRoutes from "./routes/checkpoints.js";
 
 const app = express();
 
@@ -28,6 +29,7 @@ app.use("/api/auth", authRouter);
 app.use("/api/rooms", roomsRouter);
 app.use("/api/run", runRouter);
 app.use("/api/chat", chatRouter);
+app.use("/api/checkpoints", checkpointRoutes);
 
 const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
   console.error(err);

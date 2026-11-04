@@ -3,6 +3,7 @@ import { Server } from "@hocuspocus/server";
 import mongoose, { Schema, model } from "mongoose";
 import { jwtVerify } from "jose";
 import * as Y from "yjs";
+import { startRestoreServer } from "./restoreCheckpoint.js";
 
 interface IRoomDocument {
   _id: string;
@@ -255,6 +256,10 @@ async function startServer() {
   });
 
   await server.listen();
+  startRestoreServer(
+  (roomId) => server.hocuspocus.documents.get(roomId),
+  signingKey
+);
 
   let checkingDeletedRooms = false;
 

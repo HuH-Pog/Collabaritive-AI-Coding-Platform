@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState,useCallback } from "react";
 import Link from "next/link";
 import dynamic from "next/dynamic";
 import * as Y from "yjs";
@@ -26,6 +26,7 @@ import FileExplorer, {
   type WorkspaceFile,
   type WorkspaceEntry,
 } from "./FileExplorer";
+import CheckpointPanel from "./CheckpointPanel";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
 const WS_URL = process.env.NEXT_PUBLIC_REALTIME_URL ?? "ws://localhost:1234";
@@ -145,6 +146,18 @@ export default function CollaborativeEditor({
   const [viewerCopied, setViewerCopied] = useState(false);
   const [copyingViewer, setCopyingViewer] = useState(false);
   const [inviteError, setInviteError] = useState("");
+
+  const [historyOpen, setHistoryOpen] = useState(false);
+
+const getCheckpointToken = useCallback(async () => {
+  const access = await fetchRoomAccess(shareToken);
+
+  if (access.documentName !== documentName) {
+    throw new Error("Room access does not match this workspace.");
+  }
+
+  return access.accessToken;
+}, [shareToken, documentName]);
 
   const [sharedDoc, setSharedDoc] = useState<Y.Doc | null>(null);
   const [files, setFiles] = useState<WorkspaceFile[]>([]);
@@ -1281,6 +1294,14 @@ return cleanup;
         {/* Action Controls & Invite Buttons */}
         <div className="workspace-topbar-right">
           <button
+  type="button"
+  className="btn btn-secondary btn-sm"
+  aria-expanded={historyOpen}
+  onClick={() => setHistoryOpen((open) => !open)}
+>
+  History
+</button>
+          <button
             type="button"
             className="btn btn-secondary btn-sm"
             onClick={copyInviteLink}
@@ -1335,6 +1356,17 @@ return cleanup;
           </button>
         </div>
       </header>
+
+      {historyOpen && (
+  <CheckpointPanel
+    doc={sharedDoc}
+    canSave={canEdit}
+    getToken={getCheckpointToken}
+    ready={synced && authenticated && status === "connected"}
+    onClose={() => setHistoryOpen(false)}
+    canRestore={role === "owner"}
+  />
+)}
 
       {/* Global connection or invite alert if present */}
       {inviteError && (

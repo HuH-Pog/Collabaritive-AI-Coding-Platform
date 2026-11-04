@@ -12,6 +12,7 @@ import { error } from "node:console";
 import mongoose from "mongoose";
 import { ChatMessage } from "../models/ChatMessage.js";
 import type { Server as SocketIOServer } from "socket.io";
+import { RoomCheckpoint } from "../models/RoomCheckpoint.js";
 
 const router = Router();
 
@@ -302,6 +303,8 @@ router.delete("/:shareToken", async (req, res, next) => {
       mongoose.connection
         .collection<{ _id: string }>("room_documents")
         .deleteOne({ _id: room.shareToken }),
+
+        RoomCheckpoint.deleteMany({ roomId: room._id }).exec(),
 
       ChatMessage.deleteMany({
         roomId: room._id,
