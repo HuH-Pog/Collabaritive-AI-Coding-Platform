@@ -7,6 +7,8 @@ import runRouter from "../src/routes/run.js";
 import authRouter from "../src/routes/auth.js"
 import chatRouter from "./routes/chat.js";
 import checkpointRoutes from "./routes/checkpoints.js";
+import aiRouter from "./routes/ai.js";
+
 
 const app = express();
 
@@ -17,6 +19,11 @@ app.use(
     origin: process.env.WEB_ORIGIN ?? "http://localhost:3000",
     credentials: true,
   })
+);
+
+app.use(
+  "/api/ai",
+  express.json({ limit: "512kb" })
 );
 
 app.use(express.json());
@@ -40,5 +47,6 @@ const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
 };
 
 app.use(errorHandler);
+app.use("/api/ai", aiRouter);
 
 export default app;

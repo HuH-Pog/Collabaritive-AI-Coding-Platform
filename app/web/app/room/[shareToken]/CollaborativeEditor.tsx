@@ -28,6 +28,16 @@ import FileExplorer, {
 } from "./FileExplorer";
 import CheckpointPanel from "./CheckpointPanel";
 
+import AIAssistant, {
+  type AIAction,
+  type AIContext,
+} from "./AIAssistant";
+
+import AIEditPanel, {
+  type EditSnapshot,
+  type EditProposal,
+} from "./AIEditPanel";
+
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
 const WS_URL = process.env.NEXT_PUBLIC_REALTIME_URL ?? "ws://localhost:1234";
 
@@ -84,6 +94,7 @@ type RunResult = {
   time: string | null;
   memory: number | null;
 };
+
 
 async function fetchRoomAccess(
   shareToken: string,
@@ -149,6 +160,12 @@ export default function CollaborativeEditor({
 
   const [historyOpen, setHistoryOpen] = useState(false);
 
+  const [rightTab, setRightTab] = useState<"chat" | "ai">("chat");
+  const [aiEditOpen, setAIEditOpen] = useState(false);
+
+const [aiRunContext, setAIRunContext] =
+  useState<AIContext | null>(null);
+
 const getCheckpointToken = useCallback(async () => {
   const access = await fetchRoomAccess(shareToken);
 
@@ -176,6 +193,17 @@ const getCheckpointToken = useCallback(async () => {
     authenticated &&
     status === "connected" &&
     synced;
+    const aiWorkspaceRef = useRef({
+  doc: sharedDoc,
+  canEdit,
+  documentName,
+});
+
+aiWorkspaceRef.current = {
+  doc: sharedDoc,
+  canEdit,
+  documentName,
+};
 
     const [entries, setEntries] = useState<WorkspaceEntry[]>([]);
 
@@ -390,6 +418,195 @@ function updateFiles() {
   }, [shareToken, editor, initialGuestName, documentName, syncTabsWithFiles]);
   const activeFile =
     files.find((file) => file.id === activeFileId) ?? null;
+
+    function getEditSnapshot(): EditSnapshot {
+  if (!canEdit || !sharedDoc || !activeFile) {
+    throw new Error(
+      "Connect as an owner or editor and select a file."
+    );
+  }
+
+  const file = sharedDoc
+    .getMap<WorkspaceEntry>("files")
+    .get(activeFile.id);
+
+  if (!file || file.kind !== "file") {
+    throw new Error("The selected file no longer exists.");
+  }
+
+  // Read the selected file directly from the shared document.
+  const originalCode = sharedDoc
+    .getText(file.textKey)
+    .toString();
+
+  if (originalCode.length > 12000) {
+    throw new Error(
+      "This first version supports files up to 12,000 characters."
+    );
+  }
+
+  const model = editor?.getModel();
+  const selection = editor?.getSelection();
+
+  const normalize = (text: string) =>
+    text.replace(/\r\n?/g, "\n");
+
+  // Include a selection only when Monaco matches this shared file.
+  // Otherwise, generate the proposal using the complete shared file.
+  const selectedCode =
+    model &&
+    selection &&
+    normalize(model.getValue()) === normalize(originalCode)
+      ? model.getValueInRange(selection)
+      : "";
+
+  return {
+    fileId: file.id,
+    textKey: file.textKey,
+    filename: file.name,
+    language,
+    originalCode,
+    selectedCode,
+  };
+}
+
+async function applyAIProposal(proposal: EditProposal): Promise<void> {
+  const startingWorkspace = aiWorkspaceRef.current;
+const expectedDocumentName = startingWorkspace.documentName;
+
+if (!startingWorkspace.doc) {
+  throw new Error("The workspace is no longer available.");
+}
+
+// Capture a non-null document for use inside nested functions.
+const doc: Y.Doc = startingWorkspace.doc;
+const fileMap = doc.getMap<WorkspaceEntry>("files");
+
+  function assertStillValid() {
+    const current = aiWorkspaceRef.current;
+
+    if (
+      current.doc !== doc ||
+      current.documentName !== expectedDocumentName ||
+      !current.canEdit ||
+      !providerRef.current
+    ) {
+      throw new Error(
+        "Workspace access changed. Reconnect before applying an edit."
+      );
+    }
+
+    const file = fileMap.get(proposal.snapshot.fileId);
+
+    if (
+      !file ||
+      file.kind !== "file" ||
+      file.textKey !== proposal.snapshot.textKey ||
+      file.name !== proposal.snapshot.filename
+    ) {
+      throw new Error(
+        "The file was renamed or deleted. Reject this proposal and generate a new one."
+      );
+    }
+
+    const currentCode = doc
+      .getText(proposal.snapshot.textKey)
+      .toString();
+
+    if (currentCode !== proposal.snapshot.originalCode) {
+      throw new Error(
+        "This file changed after the proposal was requested. Reject it and generate a new proposal."
+      );
+    }
+  }
+
+  assertStillValid();
+
+  // Get fresh authorization before saving the recovery checkpoint.
+  const token = await getCheckpointToken();
+
+  assertStillValid();
+
+  const entries = Array.from(fileMap.values()).map((entry) => {
+    if (entry.kind === "folder") {
+      return {
+        id: entry.id,
+        kind: "folder" as const,
+        name: entry.name,
+        parentId: entry.parentId,
+      };
+    }
+
+    return {
+      id: entry.id,
+      kind: "file" as const,
+      name: entry.name,
+      parentId: entry.parentId,
+      content: doc.getText(entry.textKey).toString(),
+    };
+  });
+
+  const response = await fetch(`${API_URL}/api/checkpoints`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    signal: AbortSignal.timeout(15_000),
+    body: JSON.stringify({
+      name: `Before AI edit: ${proposal.snapshot.filename}`.slice(0, 80),
+      entries,
+    }),
+  });
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(
+      data.error ?? "The checkpoint could not be saved. No edit was applied."
+    );
+  }
+
+  // Another participant may have edited the file during the request.
+  assertStillValid();
+
+  // No await between the final comparison and the local transaction.
+  doc.transact(() => {
+    const text = doc.getText(proposal.snapshot.textKey);
+
+    text.delete(0, text.length);
+    text.insert(0, proposal.replacementCode);
+  }, "ai-proposed-edit");
+}
+
+    function getAIContext(action: AIAction): AIContext {
+  if (action === "explain-error") {
+    if (!aiRunContext?.consoleError?.trim()) {
+      throw new Error(
+        "Run code first. Your latest completed run must contain an error."
+      );
+    }
+
+    return aiRunContext;
+  }
+
+  if (!editor || !activeFile) {
+    throw new Error("Select a file first.");
+  }
+
+  const model = editor.getModel();
+  const selection = editor.getSelection();
+
+  return {
+    language,
+    filename: activeFile.name,
+    code: editor.getValue(),
+    selectedCode:
+      model && selection
+        ? model.getValueInRange(selection)
+        : "",
+  };
+}
 
   const activeTextKey = activeFile?.textKey ?? null;
 
@@ -854,6 +1071,16 @@ try {
   return;
 }
 
+// Save the code at execution time for accurate error explanations.
+const runSnapshot: AIContext = {
+  language,
+  filename: activeFile?.name ?? "main",
+  code: editor.getValue(),
+  selectedCode: "",
+};
+
+setAIRunContext(null);
+
     const controller = new AbortController();
     runControllerRef.current = controller;
 
@@ -896,7 +1123,21 @@ try {
 
       if (runControllerRef.current !== controller) return;
 
-      setRunResult(data as RunResult);
+      const result = data as RunResult;
+
+setRunResult(result);
+
+setAIRunContext({
+  ...runSnapshot,
+  consoleError: [
+    result.compileOutput,
+    result.stderr,
+    result.message,
+    result.statusId !== 3 ? result.status : "",
+  ]
+    .filter(Boolean)
+    .join("\n"),
+});
     } catch (err) {
       if (runControllerRef.current !== controller) return;
 
@@ -1301,6 +1542,16 @@ return cleanup;
 >
   History
 </button>
+{role !== "viewer" && (
+  <button
+    type="button"
+    className="btn btn-secondary btn-sm"
+    disabled={!canEdit || !activeFile || isRunning}
+    onClick={() => setAIEditOpen(true)}
+  >
+    Suggest edit
+  </button>
+)}
           <button
             type="button"
             className="btn btn-secondary btn-sm"
@@ -1356,6 +1607,16 @@ return cleanup;
           </button>
         </div>
       </header>
+
+      {aiEditOpen && (
+  <AIEditPanel
+    key={documentName}
+    getToken={getCheckpointToken}
+    getSnapshot={getEditSnapshot}
+    onApply={applyAIProposal}
+    onClose={() => setAIEditOpen(false)}
+  />
+)}
 
       {historyOpen && (
   <CheckpointPanel
@@ -1562,6 +1823,7 @@ onMoveFile={moveFile}
                   onClick={() => {
                     setRunResult(null);
                     setRunError("");
+                     setAIRunContext(null);
                   }}
                   title="Clear output"
                 >
@@ -1641,25 +1903,94 @@ onMoveFile={moveFile}
           </div>
         </div>
 
-        {/* Right Column: Room Chat (Preserved and kept mounted) */}
-        <div
-          style={{
-            display:
-              typeof window !== "undefined" && window.innerWidth <= 900
-                ? activeMobileView === "chat"
-                  ? "flex"
-                  : "none"
-                : "flex",
-            height: "100%",
-          }}
-        >
-          <RoomChat
-            key={documentName}
-            shareToken={shareToken}
-            documentName={documentName}
-            guestName={name.trim() || initialGuestName}
-          />
-        </div>
+        {/* Room workspace: Chat and AI assistant sidebar */}
+<div
+  style={{
+    display:
+      typeof window !== "undefined" && window.innerWidth <= 900
+        ? activeMobileView === "chat"
+          ? "flex"
+          : "none"
+        : "flex",
+    flexDirection: "column",
+    width: 360,
+    maxWidth: "100%",
+    minWidth: 0,
+    minHeight: 0,
+    height: "100%",
+    borderLeft: "1px solid var(--border-color, #e2e8f0)",
+  }}
+>
+  <div
+    style={{
+      display: "flex",
+      gap: 8,
+      padding: 10,
+      borderBottom: "1px solid var(--border-color, #e2e8f0)",
+    }}
+  >
+    <button
+      type="button"
+      className={`btn btn-sm ${
+        rightTab === "chat" ? "btn-primary" : "btn-secondary"
+      }`}
+      aria-pressed={rightTab === "chat"}
+      onClick={() => setRightTab("chat")}
+    >
+      Room chat
+    </button>
+
+    <button
+      type="button"
+      className={`btn btn-sm ${
+        rightTab === "ai" ? "btn-primary" : "btn-secondary"
+      }`}
+      aria-pressed={rightTab === "ai"}
+      onClick={() => setRightTab("ai")}
+    >
+      AI assistant
+    </button>
+  </div>
+
+  {/* Keep both panels mounted when switching tabs. */}
+  <div
+    style={{
+      display: rightTab === "chat" ? "flex" : "none",
+      flex: 1,
+      minHeight: 0,
+      flexDirection: "column",
+      overflow: "hidden",
+    }}
+  >
+    <RoomChat
+      key={documentName}
+      shareToken={shareToken}
+      documentName={documentName}
+      guestName={name.trim() || initialGuestName}
+    />
+  </div>
+
+  <div
+    style={{
+      display: rightTab === "ai" ? "flex" : "none",
+      flex: 1,
+      minHeight: 0,
+      flexDirection: "column",
+      overflow: "hidden",
+    }}
+  >
+    <AIAssistant
+      key={documentName}
+      ready={
+        synced &&
+        authenticated &&
+        status === "connected"
+      }
+      getToken={getCheckpointToken}
+      getContext={getAIContext}
+    />
+  </div>
+</div>
       </div>
     </div>
   );
