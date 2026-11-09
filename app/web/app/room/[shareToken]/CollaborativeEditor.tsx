@@ -1598,12 +1598,11 @@ return cleanup;
           {/* Mobile view switchers */}
           <button
             type="button"
-            className={`btn btn-sm ${activeMobileView === "chat" ? "btn-primary" : "btn-secondary"}`}
-            style={{ display: "inline-flex" }}
+            className={`btn btn-sm workspace-mobile-toggle ${activeMobileView === "chat" ? "btn-primary" : "btn-secondary"}`}
             onClick={() => setActiveMobileView(activeMobileView === "editor" ? "chat" : "editor")}
           >
             <MessageSquare size={14} />
-            {activeMobileView === "chat" ? "Code" : "Chat"}
+            {activeMobileView === "chat" ? "Code" : "Chat / AI"}
           </button>
         </div>
       </header>
@@ -1648,10 +1647,9 @@ return cleanup;
       <div className="workspace-main">
         {/* Left Column: Monaco Editor + Console Drawer */}
         <div
-          className="workspace-editor-pane"
-          style={{
-            display: activeMobileView === "editor" ? "flex" : undefined,
-          }}
+          className={`workspace-editor-pane ${
+            activeMobileView !== "editor" ? "mobile-hidden" : ""
+          }`}
         >
           {/* File Toolbar */}
           {/* Workspace editor: open files for this participant */}
@@ -1904,93 +1902,64 @@ onMoveFile={moveFile}
         </div>
 
         {/* Room workspace: Chat and AI assistant sidebar */}
-<div
-  style={{
-    display:
-      typeof window !== "undefined" && window.innerWidth <= 900
-        ? activeMobileView === "chat"
-          ? "flex"
-          : "none"
-        : "flex",
-    flexDirection: "column",
-    width: 360,
-    maxWidth: "100%",
-    minWidth: 0,
-    minHeight: 0,
-    height: "100%",
-    borderLeft: "1px solid var(--border-color, #e2e8f0)",
-  }}
->
-  <div
-    style={{
-      display: "flex",
-      gap: 8,
-      padding: 10,
-      borderBottom: "1px solid var(--border-color, #e2e8f0)",
-    }}
-  >
-    <button
-      type="button"
-      className={`btn btn-sm ${
-        rightTab === "chat" ? "btn-primary" : "btn-secondary"
-      }`}
-      aria-pressed={rightTab === "chat"}
-      onClick={() => setRightTab("chat")}
-    >
-      Room chat
-    </button>
+        <div
+          className={`workspace-sidebar ${
+            activeMobileView !== "chat" ? "mobile-hidden" : ""
+          }`}
+        >
+          <div className="workspace-sidebar-tabs">
+            <button
+              type="button"
+              className={`btn btn-sm ${
+                rightTab === "chat" ? "btn-primary" : "btn-secondary"
+              }`}
+              aria-pressed={rightTab === "chat"}
+              onClick={() => setRightTab("chat")}
+            >
+              Room chat
+            </button>
 
-    <button
-      type="button"
-      className={`btn btn-sm ${
-        rightTab === "ai" ? "btn-primary" : "btn-secondary"
-      }`}
-      aria-pressed={rightTab === "ai"}
-      onClick={() => setRightTab("ai")}
-    >
-      AI assistant
-    </button>
-  </div>
+            <button
+              type="button"
+              className={`btn btn-sm ${
+                rightTab === "ai" ? "btn-primary" : "btn-secondary"
+              }`}
+              aria-pressed={rightTab === "ai"}
+              onClick={() => setRightTab("ai")}
+            >
+              AI assistant
+            </button>
+          </div>
 
-  {/* Keep both panels mounted when switching tabs. */}
-  <div
-    style={{
-      display: rightTab === "chat" ? "flex" : "none",
-      flex: 1,
-      minHeight: 0,
-      flexDirection: "column",
-      overflow: "hidden",
-    }}
-  >
-    <RoomChat
-      key={documentName}
-      shareToken={shareToken}
-      documentName={documentName}
-      guestName={name.trim() || initialGuestName}
-    />
-  </div>
+          {/* Keep both panels mounted when switching tabs. */}
+          <div
+            className="workspace-sidebar-panel"
+            style={{ display: rightTab === "chat" ? "flex" : "none" }}
+          >
+            <RoomChat
+              key={documentName}
+              shareToken={shareToken}
+              documentName={documentName}
+              guestName={name.trim() || initialGuestName}
+            />
+          </div>
 
-  <div
-    style={{
-      display: rightTab === "ai" ? "flex" : "none",
-      flex: 1,
-      minHeight: 0,
-      flexDirection: "column",
-      overflow: "hidden",
-    }}
-  >
-    <AIAssistant
-      key={documentName}
-      ready={
-        synced &&
-        authenticated &&
-        status === "connected"
-      }
-      getToken={getCheckpointToken}
-      getContext={getAIContext}
-    />
-  </div>
-</div>
+          <div
+            className="workspace-sidebar-panel"
+            style={{ display: rightTab === "ai" ? "flex" : "none" }}
+          >
+            <AIAssistant
+              key={documentName}
+              ready={
+                synced &&
+                authenticated &&
+                status === "connected"
+              }
+              getToken={getCheckpointToken}
+              getContext={getAIContext}
+            />
+          </div>
+        </div>
       </div>
     </div>
   );

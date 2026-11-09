@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import { Sparkles, Trash2, Code2, AlertTriangle, Send } from "lucide-react";
 
 const API_URL =
   process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
@@ -166,10 +167,14 @@ export default function AIAssistant({
 
   return (
     <section className="ai-panel" aria-label="AI assistant">
+      {/* Header */}
       <header className="ai-header">
-        <div>
-          <strong>AI Assistant</strong>
-          <small>Your conversation is private to this tab.</small>
+        <div className="ai-header-info">
+          <div className="ai-title">
+            <Sparkles size={14} className="ai-icon" />
+            <span>AI Assistant</span>
+          </div>
+          <small className="ai-subtitle">Private to this tab and room</small>
         </div>
 
         <button
@@ -180,18 +185,23 @@ export default function AIAssistant({
             setMessages([]);
             setError("");
           }}
+          title="Clear discussion history"
         >
+          <Trash2 size={12} />
           Clear
         </button>
       </header>
 
+      {/* Quick context action buttons */}
       <div className="ai-quick-actions">
         <button
           type="button"
           className="btn btn-secondary btn-sm"
           disabled={!ready || busy}
           onClick={() => void send("explain")}
+          title="Explain current file or highlighted selection"
         >
+          <Code2 size={12} />
           Explain code
         </button>
 
@@ -200,18 +210,24 @@ export default function AIAssistant({
           className="btn btn-secondary btn-sm"
           disabled={!ready || busy}
           onClick={() => void send("explain-error")}
+          title="Explain the latest runtime or syntax error"
         >
+          <AlertTriangle size={12} />
           Explain error
         </button>
       </div>
 
-      <div className="ai-messages" aria-busy={busy}>
+      {/* Scrollable conversation history */}
+      <div className="ai-messages" aria-busy={busy} role="log" aria-live="polite">
         {messages.length === 0 && (
-          <p className="ai-hint">
-            Ask about your active file or select code and click
-            Explain code. Explain error uses the code saved with
-            your latest run.
-          </p>
+          <div className="ai-hint">
+            <p>
+              Ask questions about your code, or select code and click <strong>Explain code</strong>.
+            </p>
+            <p style={{ marginTop: 6, fontSize: 11, opacity: 0.85 }}>
+              <strong>Explain error</strong> inspects the execution output and code from your latest run.
+            </p>
+          </div>
         )}
 
         {messages.map((message, index) => (
@@ -219,34 +235,44 @@ export default function AIAssistant({
             key={index}
             className={`ai-message ${message.role}`}
           >
-            <strong>
-              {message.role === "user" ? "You" : "Assistant"}
-            </strong>
+            <div className="ai-message-header">
+              <strong className="ai-message-author">
+                {message.role === "user" ? "You" : "AI Assistant"}
+              </strong>
+            </div>
 
-            {message.role === "assistant" ? (
-              <ReactMarkdown
-                skipHtml
-                disallowedElements={["img"]}
-              >
-                {message.content}
-              </ReactMarkdown>
-            ) : (
-              <p>{message.content}</p>
-            )}
+            <div className="ai-message-body">
+              {message.role === "assistant" ? (
+                <ReactMarkdown
+                  skipHtml
+                  disallowedElements={["img"]}
+                >
+                  {message.content}
+                </ReactMarkdown>
+              ) : (
+                <p>{message.content}</p>
+              )}
+            </div>
           </article>
         ))}
 
-        {busy && <p role="status">Thinking…</p>}
+        {busy && (
+          <div className="ai-busy-indicator" role="status">
+            <span className="ai-busy-dot" />
+            <span>AI is analyzing code and generating response…</span>
+          </div>
+        )}
 
         {error && (
-          <p className="ai-error" role="alert">
+          <div className="ai-error" role="alert">
             {error}
-          </p>
+          </div>
         )}
 
         <div ref={bottomRef} />
       </div>
 
+      {/* Composer form */}
       <form
         className="ai-compose"
         onSubmit={(event) => {
@@ -256,47 +282,316 @@ export default function AIAssistant({
       >
         <textarea
           aria-label="Question for the AI assistant"
-          placeholder="Ask about your code…"
+          placeholder="Ask a question about your code… (Enter to send, Shift+Enter for newline)"
           value={question}
           onChange={(event) => setQuestion(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              if (ready && !busy && question.trim()) {
+                void send("ask");
+              }
+            }
+          }}
           maxLength={4000}
           disabled={busy}
-          rows={3}
+          rows={2}
         />
 
         <div className="ai-compose-footer">
-          <small>Active file is included when you send.</small>
+          <small className="ai-compose-hint">
+            Active file included automatically
+          </small>
 
           <button
             type="submit"
             className="btn btn-primary btn-sm"
             disabled={!ready || busy || !question.trim()}
           >
+            <Send size={12} />
             {busy ? "Thinking…" : "Send"}
           </button>
         </div>
       </form>
 
       <style jsx>{`
-        /* Room workspace: AI assistant panel */
+        /* ========================================================================= */
+        /* Room Workspace: AI Assistant Panel */
+        /* ========================================================================= */
+
         .ai-panel {
           display: flex;
           flex-direction: column;
           flex: 1;
+          width: 100%;
           min-height: 0;
           min-width: 0;
           height: 100%;
-          color: var(--text-primary, #172033);
-          background: var(--bg-primary, #ffffff);
+          color: var(--text-primary);
+          background: var(--bg-surface);
+          overflow: hidden;
         }
 
-        .ai-header,
-        .ai-quick-actions,
-        .ai-compose {
+        .ai-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
+          padding: 10px 12px;
+          border-bottom: 1px solid var(--border-default);
+          background: var(--bg-surface);
+          flex-shrink: 0;
+        }
+
+        .ai-header-info {
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+        }
+
+        .ai-title {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          font-size: 12px;
+          font-weight: 600;
+          color: var(--text-primary);
+        }
+
+        .ai-title :global(.ai-icon) {
+          color: var(--semantic-blue);
+        }
+
+        .ai-subtitle {
+          color: var(--text-muted);
+          font-size: 11px;
+        }
+
+        .ai-quick-actions {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 6px;
+          padding: 8px 12px;
+          border-bottom: 1px solid var(--border-default);
+          background: var(--bg-surface);
+          flex-shrink: 0;
+        }
+
+        .ai-messages {
+          flex: 1;
+          min-height: 0;
+          overflow-y: auto;
           padding: 12px;
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+          background: var(--bg-workspace);
         }
 
-        .ai-header,
+        .ai-hint {
+          padding: 10px 12px;
+          background: var(--bg-surface);
+          border: 1px solid var(--border-default);
+          border-radius: var(--radius-xs);
+          color: var(--text-muted);
+          font-size: 12px;
+          line-height: 1.5;
+        }
+
+        .ai-hint p {
+          margin: 0;
+        }
+
+        .ai-hint strong {
+          color: var(--text-primary);
+        }
+
+        .ai-message {
+          border: 1px solid var(--border-default);
+          border-radius: var(--radius-xs);
+          padding: 10px 12px;
+          overflow-wrap: anywhere;
+          font-size: 13px;
+          line-height: 1.6;
+        }
+
+        .ai-message.user {
+          background: var(--bg-elevated);
+          border-color: var(--border-default);
+        }
+
+        .ai-message.assistant {
+          background: var(--bg-surface);
+          border-color: var(--border-default);
+        }
+
+        .ai-message-header {
+          display: flex;
+          align-items: baseline;
+          justify-content: space-between;
+          margin-bottom: 4px;
+        }
+
+        .ai-message-author {
+          font-size: 11px;
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 0.03em;
+        }
+
+        .ai-message.user .ai-message-author {
+          color: var(--text-muted);
+        }
+
+        .ai-message.assistant .ai-message-author {
+          color: var(--semantic-blue);
+        }
+
+        .ai-message-body {
+          color: var(--text-primary);
+          font-size: 13px;
+          line-height: 1.6;
+        }
+
+        .ai-message-body :global(p) {
+          margin: 0 0 8px 0;
+          color: var(--text-primary);
+          white-space: pre-wrap;
+        }
+
+        .ai-message-body :global(p:last-child) {
+          margin-bottom: 0;
+        }
+
+        .ai-message-body :global(ul),
+        .ai-message-body :global(ol) {
+          margin: 0 0 8px 0;
+          padding-left: 20px;
+          color: var(--text-primary);
+        }
+
+        .ai-message-body :global(li) {
+          margin-bottom: 4px;
+        }
+
+        .ai-message-body :global(code) {
+          font-family: var(--font-mono);
+          font-size: 12px;
+          background: var(--bg-workspace);
+          color: var(--text-primary);
+          padding: 2px 5px;
+          border-radius: var(--radius-xs);
+          border: 1px solid var(--border-default);
+        }
+
+        .ai-message-body :global(pre) {
+          overflow-x: auto;
+          padding: 10px 12px;
+          border-radius: var(--radius-xs);
+          background: var(--bg-workspace);
+          border: 1px solid var(--border-default);
+          color: var(--text-primary);
+          font-family: var(--font-mono);
+          font-size: 12px;
+          line-height: 1.5;
+          margin: 8px 0;
+          white-space: pre;
+        }
+
+        .ai-message-body :global(pre code) {
+          background: transparent;
+          border: none;
+          padding: 0;
+          color: inherit;
+        }
+
+        .ai-message-body :global(a) {
+          color: var(--semantic-blue);
+          text-decoration: underline;
+        }
+
+        .ai-message-body :global(strong) {
+          color: var(--text-primary);
+          font-weight: 600;
+        }
+
+        .ai-message-body :global(h1),
+        .ai-message-body :global(h2),
+        .ai-message-body :global(h3),
+        .ai-message-body :global(h4) {
+          color: var(--text-primary);
+          font-weight: 600;
+          margin: 10px 0 6px 0;
+          font-size: 13px;
+        }
+
+        .ai-busy-indicator {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          color: var(--semantic-blue);
+          font-size: 12px;
+          padding: 6px 0;
+        }
+
+        .ai-busy-dot {
+          width: 8px;
+          height: 8px;
+          border-radius: 50%;
+          background: var(--semantic-blue);
+          animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+          0%, 100% { opacity: 0.4; }
+          50% { opacity: 1; }
+        }
+
+        .ai-error {
+          color: var(--semantic-red);
+          background: var(--semantic-red-bg);
+          border: 1px solid var(--semantic-red-border);
+          border-radius: var(--radius-xs);
+          padding: 8px 10px;
+          font-size: 12px;
+          margin: 0;
+        }
+
+        .ai-compose {
+          padding: 10px 12px;
+          border-top: 1px solid var(--border-default);
+          background: var(--bg-surface);
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+          flex-shrink: 0;
+        }
+
+        .ai-compose textarea {
+          box-sizing: border-box;
+          width: 100%;
+          resize: vertical;
+          min-height: 48px;
+          max-height: 120px;
+          padding: 8px 10px;
+          background: var(--bg-workspace);
+          color: var(--text-primary);
+          border: 1px solid var(--border-default);
+          border-radius: var(--radius-xs);
+          font-family: inherit;
+          font-size: 12px;
+          line-height: 1.45;
+          outline: none;
+        }
+
+        .ai-compose textarea:focus {
+          border-color: var(--border-focus);
+        }
+
+        .ai-compose textarea::placeholder {
+          color: var(--text-muted);
+        }
+
         .ai-compose-footer {
           display: flex;
           align-items: center;
@@ -304,97 +599,9 @@ export default function AIAssistant({
           gap: 8px;
         }
 
-        .ai-header {
-          border-bottom: 1px solid var(--border-color, #e2e8f0);
-        }
-
-        .ai-header small {
-          display: block;
-          margin-top: 4px;
-        }
-
-        small,
-        .ai-hint {
-          color: var(--text-muted, #64748b);
-          font-size: 12px;
-        }
-
-        .ai-quick-actions {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 8px;
-        }
-
-        .ai-messages {
-          flex: 1;
-          min-height: 0;
-          overflow-y: auto;
-          padding: 0 12px 12px;
-        }
-
-        .ai-message {
-          border: 1px solid var(--border-color, #e2e8f0);
-          border-radius: 10px;
-          padding: 12px;
-          margin-bottom: 12px;
-          overflow-wrap: anywhere;
-          font-size: 13px;
-          line-height: 1.65;
-        }
-
-        .ai-message.user {
-          background: var(--bg-secondary, #f1f5f9);
-        }
-
-        .ai-message > strong {
-          display: block;
-          margin-bottom: 6px;
-          font-size: 12px;
-        }
-
-        .ai-message :global(pre) {
-          overflow-x: auto;
-          padding: 12px;
-          border-radius: 8px;
-          background: #111827;
-          color: #e2e8f0;
-          white-space: pre;
-        }
-
-        .ai-message :global(code) {
-          font-family: var(--font-mono, monospace);
-          font-size: 12px;
-        }
-
-        .ai-message :global(p) {
-          white-space: pre-wrap;
-        }
-
-        .ai-compose {
-          border-top: 1px solid var(--border-color, #e2e8f0);
-        }
-
-        textarea {
-          box-sizing: border-box;
-          width: 100%;
-          resize: vertical;
-          max-height: 180px;
-          padding: 10px;
-          border: 1px solid var(--border-color, #cbd5e1);
-          border-radius: 8px;
-          background: var(--bg-secondary, #f8fafc);
-          color: inherit;
-          font: inherit;
-          font-size: 13px;
-        }
-
-        .ai-compose-footer {
-          margin-top: 8px;
-        }
-
-        .ai-error {
-          color: var(--accent-rose, #dc2626);
-          font-size: 13px;
+        .ai-compose-hint {
+          color: var(--text-muted);
+          font-size: 11px;
         }
       `}</style>
     </section>

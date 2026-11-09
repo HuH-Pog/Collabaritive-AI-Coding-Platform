@@ -2,13 +2,21 @@
 
 import { useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
+import { Sparkles, X, Clock, Check, AlertCircle } from "lucide-react";
 
 const API_URL =
   process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
 
 const DiffEditor = dynamic(
   () => import("@monaco-editor/react").then((module) => module.DiffEditor),
-  { ssr: false }
+  {
+    ssr: false,
+    loading: () => (
+      <div style={{ height: "100%", display: "grid", placeItems: "center", color: "var(--text-muted, #9BA8AB)" }}>
+        Loading Monaco diff comparison…
+      </div>
+    ),
+  }
 );
 
 export type EditSnapshot = {
@@ -181,66 +189,117 @@ export default function AIEditPanel({
   return (
     <dialog
       ref={dialogRef}
-      className="ai-edit-dialog"
+      className={`ai-edit-dialog ${proposal ? "has-proposal" : "initial-prompt"}`}
       aria-labelledby="ai-edit-title"
       onCancel={(event) => {
         event.preventDefault();
         if (!busy) onClose();
       }}
+      onClick={(event) => {
+        if (event.target === dialogRef.current && !busy) {
+          onClose();
+        }
+      }}
     >
       <div className="ai-edit-content">
-        <header>
-          <div>
-            <strong id="ai-edit-title">AI-proposed edit</strong>
-            <small>
+        <header className="ai-edit-header">
+          <div className="ai-edit-header-info">
+            <div className="ai-edit-title" id="ai-edit-title">
+              <Sparkles size={15} className="ai-icon" />
+              <span>{proposal ? "Review AI-proposed edit" : "Suggest code edit"}</span>
+            </div>
+            <small className="ai-edit-subtitle">
               {proposal
-                ? proposal.snapshot.filename
-                : "Describe the change to your active file."}
+                ? `File: ${proposal.snapshot.filename}`
+                : "Describe the change you want to make to your active file."}
             </small>
           </div>
 
           <button
             type="button"
-            className="btn btn-secondary btn-sm"
+            className="btn btn-ghost btn-sm"
             disabled={busy}
             onClick={onClose}
+            aria-label="Close dialog"
+            title="Close (Esc)"
           >
-            Close
+            <X size={15} />
           </button>
         </header>
 
         {!proposal ? (
           <form
+            className="ai-edit-form"
             onSubmit={(event) => {
               event.preventDefault();
               void generate();
             }}
           >
-            <textarea
-              aria-label="Requested code change"
-              value={instruction}
-              onChange={(event) => setInstruction(event.target.value)}
-              placeholder="For example: fix the error while preserving my approach."
-              maxLength={3000}
-              rows={4}
-              disabled={busy}
-            />
+            <div className="ai-edit-form-body">
+              <label htmlFor="ai-edit-instruction" className="ai-edit-label">
+                Instruction
+              </label>
+              <textarea
+                id="ai-edit-instruction"
+                aria-label="Requested code change"
+                value={instruction}
+                onChange={(event) => setInstruction(event.target.value)}
+                placeholder="e.g. Refactor this function to handle edge cases, or fix the syntax error while preserving my approach."
+                maxLength={3000}
+                rows={4}
+                disabled={busy}
+                autoFocus
+              />
+              <span className="ai-edit-hint">
+                The AI will inspect your active file and propose changes as a side-by-side diff before applying.
+              </span>
+            </div>
 
-            <button
-              type="submit"
-              className="btn btn-primary btn-sm"
-              disabled={busy || !instruction.trim()}
-            >
-              {generating ? "Generating…" : "Generate proposal"}
-            </button>
+            {error && (
+              <div role="alert" className="ai-edit-error">
+                <AlertCircle size={14} />
+                <span>{error}</span>
+              </div>
+            )}
+
+            <div className="ai-edit-form-footer">
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                disabled={busy}
+                onClick={onClose}
+              >
+                Cancel
+              </button>
+
+              <button
+                type="submit"
+                className="btn btn-primary btn-sm"
+                disabled={busy || !instruction.trim()}
+              >
+                <Sparkles size={13} />
+                {generating ? "Generating proposal…" : "Generate proposal"}
+              </button>
+            </div>
           </form>
         ) : (
-          <>
-            <p className="explanation">{proposal.explanation}</p>
+          <div className="ai-edit-proposal-view">
+            {proposal.explanation && (
+              <div className="ai-edit-explanation">
+                <div className="ai-edit-explanation-title">Explanation</div>
+                <p>{proposal.explanation}</p>
+              </div>
+            )}
 
             <div className="diff-labels">
-              <span>Current code when requested</span>
-              <span>Proposed code</span>
+              <div className="diff-label-col">
+                <span className="diff-tag original">Current code</span>
+                <span className="diff-file">{proposal.snapshot.filename} (read-only)</span>
+              </div>
+              <div className="diff-label-col">
+                <span className="diff-tag proposed">Proposed edit</span>
+                <span className="diff-file">Replacement preview</span>
+              </div>
             </div>
 
             <div className="diff-container">
@@ -257,52 +316,81 @@ export default function AIEditPanel({
                   renderSideBySide: true,
                   scrollBeyondLastLine: false,
                   minimap: { enabled: false },
+                  fontFamily: "var(--font-mono, monospace)",
+                  fontSize: 13,
                 }}
               />
             </div>
 
-            <footer>
-              <small>A checkpoint is saved before applying.</small>
+            {error && (
+              <div role="alert" className="ai-edit-error" style={{ margin: "10px 14px 0" }}>
+                <AlertCircle size={14} />
+                <span>{error}</span>
+              </div>
+            )}
 
-              <button
-                type="button"
-                className="btn btn-secondary btn-sm"
-                disabled={busy}
-                onClick={onClose}
-              >
-                Reject
-              </button>
+            <footer className="ai-edit-footer">
+              <small className="ai-edit-footer-note">
+                <Clock size={12} />
+                <span>A recovery checkpoint is automatically saved before applying changes.</span>
+              </small>
 
-              <button
-                type="button"
-                className="btn btn-primary btn-sm"
-                disabled={busy}
-                onClick={() => void accept()}
-              >
-                {applying ? "Saving and applying…" : "Accept changes"}
-              </button>
+              <div className="ai-edit-actions">
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  disabled={busy}
+                  onClick={onClose}
+                >
+                  Reject
+                </button>
+
+                <button
+                  type="button"
+                  className="btn btn-primary btn-sm"
+                  disabled={busy}
+                  onClick={() => void accept()}
+                >
+                  <Check size={13} />
+                  {applying ? "Saving & applying…" : "Accept changes"}
+                </button>
+              </div>
             </footer>
-          </>
+          </div>
         )}
-
-        {error && <p role="alert" className="error">{error}</p>}
       </div>
 
       <style jsx>{`
-        /* Room workspace: AI edit review dialog */
+        /* ========================================================================= */
+        /* Room Workspace: AI Edit Proposal Dialog */
+        /* ========================================================================= */
+
         .ai-edit-dialog {
-          width: min(1100px, 94vw);
-          height: min(800px, 90vh);
           box-sizing: border-box;
           padding: 0;
-          border: 1px solid var(--border-color, #cbd5e1);
-          border-radius: 12px;
-          background: var(--bg-primary, #fff);
-          color: var(--text-primary, #172033);
+          margin: auto;
+          border: 1px solid var(--border-default, #4A5C6A);
+          border-radius: var(--radius-md, 8px);
+          background: var(--bg-surface, #11212D);
+          color: var(--text-primary, #CCD0CF);
+          box-shadow: 0 20px 48px rgba(0, 0, 0, 0.7);
+          overflow: hidden;
+        }
+
+        .ai-edit-dialog.initial-prompt {
+          width: min(580px, 94vw);
+          height: auto;
+          max-height: 85vh;
+        }
+
+        .ai-edit-dialog.has-proposal {
+          width: min(1140px, 95vw);
+          height: min(840px, 90vh);
         }
 
         .ai-edit-dialog::backdrop {
-          background: rgba(15, 23, 42, 0.6);
+          background: rgba(6, 20, 27, 0.75);
+          backdrop-filter: blur(2px);
         }
 
         .ai-edit-content {
@@ -312,73 +400,224 @@ export default function AIEditPanel({
           min-height: 0;
         }
 
-        header,
-        footer {
+        .ai-edit-header {
           display: flex;
           align-items: center;
-          gap: 10px;
-          padding: 14px;
-        }
-
-        header {
           justify-content: space-between;
-          border-bottom: 1px solid var(--border-color, #e2e8f0);
-        }
-
-        small {
-          display: block;
-          color: var(--text-muted, #64748b);
-          font-size: 12px;
-        }
-
-        footer small {
-          flex: 1;
-        }
-
-        form {
-          display: grid;
           gap: 12px;
+          padding: 12px 16px;
+          background: var(--bg-elevated, #253745);
+          border-bottom: 1px solid var(--border-default, #4A5C6A);
+          flex-shrink: 0;
+        }
+
+        .ai-edit-header-info {
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+        }
+
+        .ai-edit-title {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          font-size: 13px;
+          font-weight: 600;
+          color: var(--text-primary, #CCD0CF);
+        }
+
+        .ai-edit-title :global(.ai-icon) {
+          color: var(--semantic-blue, #5DADE2);
+        }
+
+        .ai-edit-subtitle {
+          color: var(--text-muted, #9BA8AB);
+          font-size: 11px;
+        }
+
+        /* Initial Form View */
+        .ai-edit-form {
+          display: flex;
+          flex-direction: column;
+          gap: 14px;
           padding: 16px;
         }
 
-        form button {
-          justify-self: start;
+        .ai-edit-form-body {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
         }
 
-        textarea {
+        .ai-edit-label {
+          font-size: 12px;
+          font-weight: 600;
+          color: var(--text-primary, #CCD0CF);
+        }
+
+        .ai-edit-form textarea {
           box-sizing: border-box;
           width: 100%;
-          padding: 12px;
+          padding: 10px 12px;
           resize: vertical;
-          background: var(--bg-secondary, #f8fafc);
-          color: inherit;
-          border: 1px solid var(--border-color, #cbd5e1);
-          border-radius: 8px;
-          font: inherit;
+          min-height: 90px;
+          max-height: 240px;
+          background: var(--bg-workspace, #06141B);
+          color: var(--text-primary, #CCD0CF);
+          border: 1px solid var(--border-default, #4A5C6A);
+          border-radius: var(--radius-xs, 4px);
+          font-family: inherit;
+          font-size: 13px;
+          line-height: 1.5;
+          outline: none;
         }
 
-        .explanation,
-        .error {
-          padding: 0 14px;
-          font-size: 13px;
-          white-space: pre-wrap;
+        .ai-edit-form textarea:focus {
+          border-color: var(--border-focus, #CCD0CF);
+        }
+
+        .ai-edit-form textarea::placeholder {
+          color: var(--text-muted, #9BA8AB);
+        }
+
+        .ai-edit-hint {
+          font-size: 11px;
+          color: var(--text-muted, #9BA8AB);
+          line-height: 1.4;
+        }
+
+        .ai-edit-form-footer {
+          display: flex;
+          align-items: center;
+          justify-content: flex-end;
+          gap: 8px;
+          padding-top: 4px;
+        }
+
+        /* Proposal Diff Review View */
+        .ai-edit-proposal-view {
+          display: flex;
+          flex-direction: column;
+          flex: 1;
+          min-height: 0;
+          overflow: hidden;
+        }
+
+        .ai-edit-explanation {
+          padding: 10px 16px;
+          background: var(--bg-workspace, #06141B);
+          border-bottom: 1px solid var(--border-default, #4A5C6A);
+          font-size: 12px;
+          color: var(--text-primary, #CCD0CF);
+          line-height: 1.5;
+          flex-shrink: 0;
+          max-height: 100px;
+          overflow-y: auto;
+        }
+
+        .ai-edit-explanation-title {
+          font-size: 11px;
+          font-weight: 600;
+          color: var(--semantic-blue, #5DADE2);
+          text-transform: uppercase;
+          letter-spacing: 0.03em;
+          margin-bottom: 2px;
+        }
+
+        .ai-edit-explanation p {
+          margin: 0;
         }
 
         .diff-labels {
           display: grid;
           grid-template-columns: 1fr 1fr;
-          padding: 8px 14px;
-          font-size: 12px;
-          color: var(--text-muted, #64748b);
+          gap: 12px;
+          padding: 6px 16px;
+          background: var(--bg-elevated, #253745);
+          border-bottom: 1px solid var(--border-default, #4A5C6A);
+          flex-shrink: 0;
+        }
+
+        .diff-label-col {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          min-width: 0;
+        }
+
+        .diff-tag {
+          font-size: 10px;
+          font-weight: 600;
+          padding: 1px 6px;
+          border-radius: var(--radius-xs, 3px);
+          text-transform: uppercase;
+          letter-spacing: 0.02em;
+        }
+
+        .diff-tag.original {
+          background: var(--semantic-red-bg, rgba(231, 76, 60, 0.15));
+          color: var(--semantic-red, #E74C3C);
+          border: 1px solid var(--semantic-red-border, rgba(231, 76, 60, 0.35));
+        }
+
+        .diff-tag.proposed {
+          background: var(--semantic-green-bg, rgba(46, 204, 113, 0.15));
+          color: var(--semantic-green, #2ECC71);
+          border: 1px solid var(--semantic-green-border, rgba(46, 204, 113, 0.35));
+        }
+
+        .diff-file {
+          font-size: 11px;
+          font-family: var(--font-mono, monospace);
+          color: var(--text-muted, #9BA8AB);
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
         }
 
         .diff-container {
           flex: 1;
-          min-height: 0;
+          min-height: 280px;
+          width: 100%;
+          background: var(--bg-workspace, #06141B);
+          position: relative;
         }
 
-        .error {
-          color: var(--accent-rose, #dc2626);
+        .ai-edit-error {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          color: var(--semantic-red, #E74C3C);
+          background: var(--semantic-red-bg, rgba(231, 76, 60, 0.15));
+          border: 1px solid var(--semantic-red-border, rgba(231, 76, 60, 0.35));
+          border-radius: var(--radius-xs, 4px);
+          padding: 8px 12px;
+          font-size: 12px;
+        }
+
+        .ai-edit-footer {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          padding: 12px 16px;
+          background: var(--bg-elevated, #253745);
+          border-top: 1px solid var(--border-default, #4A5C6A);
+          flex-shrink: 0;
+        }
+
+        .ai-edit-footer-note {
+          display: inline-flex;
+          align-items: center;
+          gap: 5px;
+          color: var(--text-muted, #9BA8AB);
+          font-size: 11px;
+        }
+
+        .ai-edit-actions {
+          display: flex;
+          align-items: center;
+          gap: 8px;
         }
       `}</style>
     </dialog>

@@ -323,7 +323,7 @@ sendingRef.current = false;
       {/* Room Chat Header */}
       <div className="chat-header">
         <div className="chat-header-title">
-          <MessageSquare size={15} color="var(--accent-blue)" />
+          <MessageSquare size={15} color="var(--semantic-blue)" />
           <span>Room Discussion</span>
         </div>
 
@@ -386,7 +386,7 @@ sendingRef.current = false;
           return (
             <article key={message.id} className="chat-message-item">
               <div className="chat-message-header">
-                <span className="chat-author-name" style={{ color: isCurrentUser ? "var(--text-primary)" : "var(--accent-primary)" }}>
+                <span className="chat-author-name" style={{ color: isCurrentUser ? "var(--text-primary)" : "var(--semantic-blue)" }}>
                   {message.name}
                   {isCurrentUser && " (you)"}
                 </span>
@@ -423,7 +423,7 @@ sendingRef.current = false;
         />
 
         {sendError && (
-          <div style={{ color: "var(--accent-rose)", fontSize: 11 }}>
+          <div style={{ color: "var(--semantic-red)", fontSize: 11 }}>
             {sendError}
           </div>
         )}
