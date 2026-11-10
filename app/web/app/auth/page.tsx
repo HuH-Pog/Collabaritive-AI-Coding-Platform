@@ -12,6 +12,7 @@ import {
   AlertCircle,
   FolderCode,
 } from "lucide-react";
+import GoogleSignInButton from "../room/[shareToken]/GoogleSignInButton";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
 
@@ -357,7 +358,46 @@ function AuthContent() {
                 </button>
               </form>
 
+                            {/* Authentication: Google sign-in */}
+              <div style={{ marginTop: 24 }}>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 12,
+                    marginBottom: 16,
+                    color: "var(--text-muted)",
+                    fontSize: 12,
+                  }}
+                >
+                  <span
+                    style={{
+                      flex: 1,
+                      height: 1,
+                      background: "currentColor",
+                      opacity: 0.25,
+                    }}
+                  />
+
+                  <span>or continue with Google</span>
+
+                  <span
+                    style={{
+                      flex: 1,
+                      height: 1,
+                      background: "currentColor",
+                      opacity: 0.25,
+                    }}
+                  />
+                </div>
+
+                <div style={{ display: "flex", justifyContent: "center" }}>
+                  <GoogleSignInButton />
+                </div>
+              </div>
+
               <div style={{ marginTop: 24, textAlign: "center", fontSize: 13, color: "var(--text-muted)" }}>
+                
                 {mode === "signup" ? (
                   <span>
                     Already have an account?{" "}

@@ -8,6 +8,7 @@ const userSchema = new Schema(
       trim: true,
       maxlength: 30,
     },
+
     email: {
       type: String,
       required: true,
@@ -15,13 +16,31 @@ const userSchema = new Schema(
       lowercase: true,
       trim: true,
     },
+
     passwordHash: {
       type: String,
-      required: true,
       select: false,
+
+      // Password accounts require a hash.
+      // Google accounts can be created without one.
+      required: function (this: { googleId?: string | null }) {
+        return !this.googleId;
+      },
+    },
+
+    googleId: {
+      type: String,
+      trim: true,
     },
   },
   { timestamps: true }
+);
+
+// Existing password users have no googleId.
+// When present, a Google identity can belong to only one user.
+userSchema.index(
+  { googleId: 1 },
+  { unique: true, sparse: true }
 );
 
 export const User = model("User", userSchema);
