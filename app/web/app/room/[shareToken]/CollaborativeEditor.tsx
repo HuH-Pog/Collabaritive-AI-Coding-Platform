@@ -144,6 +144,9 @@ export default function CollaborativeEditor({
 
   // Execution state
   const [isRunning, setIsRunning] = useState(false);
+  const [runPhase, setRunPhase] = useState<
+  "idle" | "submitting" | "queued" | "running"
+>("idle");
   const [stdin, setStdin] = useState("");
   const [runResult, setRunResult] = useState<RunResult | null>(null);
   const [runError, setRunError] = useState("");
@@ -1027,136 +1030,230 @@ function deleteFolder(folderId: string): string | null {
   }
 
   async function runCode(mode: "file" | "project") {
-    if (isViewer) {
-      setRunError("Viewers cannot run code.");
-      return;
-    }
+  if (isViewer) {
+    setRunError("Viewers cannot run code.");
+    return;
+  }
 
-    if (!editor || runControllerRef.current) return;
+  if (!editor || runControllerRef.current) return;
+
+  if (
+    !canEdit ||
+    !sharedDoc ||
+    !activeFileId ||
+    sharedDoc
+      .getMap<WorkspaceEntry>("files")
+      .get(activeFileId)?.kind !== "file"
+  ) {
+    setRunError("Select an available file before running code.");
+    return;
+  }
+
+  let payload:
+    | { code: string }
+    | { project: ReturnType<typeof buildProjectPayload> };
+
+  try {
+    if (mode === "project") {
+      payload = { project: buildProjectPayload(sharedDoc) };
+    } else {
+      const code = editor.getValue();
+
+      if (!code.trim()) {
+        setRunError("Write some code in the selected file first.");
+        return;
+      }
+
+      payload = { code };
+    }
+  } catch (err) {
+    setRunError(
+      err instanceof Error ? err.message : "Could not read project."
+    );
+    return;
+  }
+
+  const runSnapshot: AIContext = {
+    language,
+    filename: activeFile?.name ?? "main",
+    code: editor.getValue(),
+    selectedCode: "",
+  };
+
+  const controller = new AbortController();
+  runControllerRef.current = controller;
+
+  // Includes queue waiting time and execution.
+  const timeoutId = window.setTimeout(
+    () => controller.abort(),
+    120_000
+  );
+
+  setIsRunning(true);
+  setRunPhase("submitting");
+  setRunError("");
+  setRunResult(null);
+  setAIRunContext(null);
+  setConsoleTab("output");
+
+  try {
+    let access = await fetchRoomAccess(
+      shareToken,
+      controller.signal
+    );
+
     if (
-  !canEdit ||
-  !sharedDoc ||
-  !activeFileId ||
-  sharedDoc
-    .getMap<WorkspaceEntry>("files")
-    .get(activeFileId)?.kind !== "file"
-) {
-  setRunError("Select an available file before running code.");
-  return;
-}
-
-    setRunError("");
-setRunResult(null);
-setConsoleTab("output");
-
-let payload:
-  | { code: string }
-  | { project: ReturnType<typeof buildProjectPayload> };
-
-try {
-  if (mode === "project") {
-    payload = { project: buildProjectPayload(sharedDoc) };
-  } else {
-    const code = editor.getValue();
-
-    if (!code.trim()) {
-      setRunError("Write some code in the selected file first.");
-      return;
+      access.documentName !== documentName ||
+      access.role === "viewer"
+    ) {
+      throw new Error("You do not have permission to run this file.");
     }
 
-    payload = { code };
-  }
-} catch (err) {
-  setRunError(err instanceof Error ? err.message : "Could not read project.");
-  return;
-}
+    const submissionResponse = await fetch(`${API_URL}/api/run`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${access.accessToken}`,
+      },
+      signal: controller.signal,
+      body: JSON.stringify({
+        shareToken,
+        stdin,
+        ...payload,
+      }),
+    });
 
-// Save the code at execution time for accurate error explanations.
-const runSnapshot: AIContext = {
-  language,
-  filename: activeFile?.name ?? "main",
-  code: editor.getValue(),
-  selectedCode: "",
-};
+    const submission = await submissionResponse.json();
 
-setAIRunContext(null);
+    if (!submissionResponse.ok) {
+      throw new Error(submission.error ?? "Could not queue this run.");
+    }
 
-    const controller = new AbortController();
-    runControllerRef.current = controller;
+    if (
+      typeof submission.jobId !== "string" ||
+      typeof submission.resultToken !== "string"
+    ) {
+      throw new Error("The server returned an invalid job.");
+    }
 
-    const timeoutId = window.setTimeout(() => {
-      controller.abort();
-    }, 30_000);
+    if (runControllerRef.current !== controller) return;
 
-    setIsRunning(true);
+    setRunPhase("queued");
 
-    try {
-      const access = await fetchRoomAccess(shareToken, controller.signal);
+    const statusUrl =
+      `${API_URL}/api/run/${encodeURIComponent(submission.jobId)}`;
 
-      if (access.documentName !== documentName) {
-        throw new Error("Room access does not match this document.");
-      }
-
-      if (access.role === "viewer") {
-        throw new Error("Viewers cannot run code.");
-      }
-
-      const response = await fetch(`${API_URL}/api/run`, {
-        method: "POST",
+    function requestStatus(token: string) {
+      return fetch(statusUrl, {
         headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${access.accessToken}`,
+          Authorization: `Bearer ${token}`,
+          "X-Run-Token": submission.resultToken,
         },
+        cache: "no-store",
         signal: controller.signal,
-        body: JSON.stringify({
-  shareToken,
-  stdin,
-  ...payload,
-}),
       });
+    }
 
-      const data = await response.json();
+    while (!controller.signal.aborted) {
+      let statusResponse = await requestStatus(access.accessToken);
 
-      if (!response.ok) {
-        throw new Error(data.error ?? "Could not execute code.");
+      // Refresh short-lived room authorization when needed.
+      if (statusResponse.status === 401) {
+        access = await fetchRoomAccess(
+          shareToken,
+          controller.signal
+        );
+
+        if (
+          access.documentName !== documentName ||
+          access.role === "viewer"
+        ) {
+          throw new Error("Room execution access has changed.");
+        }
+
+        statusResponse = await requestStatus(access.accessToken);
+      }
+
+      const data = await statusResponse.json();
+
+      if (!statusResponse.ok) {
+        throw new Error(data.error ?? "Could not read execution status.");
       }
 
       if (runControllerRef.current !== controller) return;
 
-      const result = data as RunResult;
+      if (data.state === "failed") {
+        throw new Error(data.error ?? "Execution failed.");
+      }
 
-setRunResult(result);
+      if (data.state === "completed") {
+        const result = data.result as RunResult;
 
-setAIRunContext({
-  ...runSnapshot,
-  consoleError: [
-    result.compileOutput,
-    result.stderr,
-    result.message,
-    result.statusId !== 3 ? result.status : "",
-  ]
-    .filter(Boolean)
-    .join("\n"),
-});
-    } catch (err) {
-      if (runControllerRef.current !== controller) return;
+        if (!result || typeof result.statusId !== "number") {
+          throw new Error("The server returned an invalid result.");
+        }
 
-      setRunError(
-        controller.signal.aborted
-          ? "Execution request timed out after 30 seconds."
-          : err instanceof Error
-            ? err.message
-            : "Could not execute code."
+        setRunResult(result);
+
+        setAIRunContext({
+          ...runSnapshot,
+          consoleError: [
+            result.compileOutput,
+            result.stderr,
+            result.message,
+            result.statusId !== 3 ? result.status : "",
+          ]
+            .filter(Boolean)
+            .join("\n"),
+        });
+
+        return;
+      }
+
+      setRunPhase(
+        data.state === "running" ? "running" : "queued"
       );
-    } finally {
-      window.clearTimeout(timeoutId);
 
-      if (runControllerRef.current === controller) {
-        runControllerRef.current = null;
-        setIsRunning(false);
-      }
+      // Poll at most once per second.
+      await new Promise<void>((resolve, reject) => {
+        const signal = controller.signal;
+
+        const onAbort = () => {
+          window.clearTimeout(timer);
+          signal.removeEventListener("abort", onAbort);
+          reject(new Error("Execution polling stopped."));
+        };
+
+        const timer = window.setTimeout(() => {
+          signal.removeEventListener("abort", onAbort);
+          resolve();
+        }, 1000);
+
+        signal.addEventListener("abort", onAbort, { once: true });
+
+        if (signal.aborted) onAbort();
+      });
+    }
+  } catch (err) {
+    if (runControllerRef.current !== controller) return;
+
+    setRunError(
+      controller.signal.aborted
+        ? "Stopped waiting after 2 minutes. A submitted job may still finish in the background."
+        : err instanceof Error
+          ? err.message
+          : "Could not execute code."
+    );
+  } finally {
+    window.clearTimeout(timeoutId);
+
+    if (runControllerRef.current === controller) {
+      runControllerRef.current = null;
+      setIsRunning(false);
+      setRunPhase("idle");
     }
   }
+}
   function buildProjectPayload(doc: Y.Doc) {
   const items = doc.getMap<WorkspaceEntry>("files");
   const projectFiles: { path: string; content: string }[] = [];
@@ -1849,7 +1946,13 @@ onMoveFile={moveFile}
                   {isRunning && (
                     <div style={{ color: "var(--accent-blue)", display: "flex", alignItems: "center", gap: 8 }}>
                       <Clock size={14} />
-                      <span>Executing code on runtime service...</span>
+                      <span>
+  {runPhase === "submitting"
+    ? "Submitting run…"
+    : runPhase === "queued"
+      ? "Queued — waiting for an execution slot…"
+      : "Running code…"}
+</span>
                     </div>
                   )}
 

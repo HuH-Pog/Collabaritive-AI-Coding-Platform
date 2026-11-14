@@ -1,251 +1,271 @@
 import { Router } from "express";
 import { rateLimit } from "express-rate-limit";
-import { setTimeout as delay } from "node:timers/promises";
+import {
+  createHash,
+  randomBytes,
+  randomUUID,
+  timingSafeEqual,
+} from "node:crypto";
+
 import { Room } from "../models/Room.js";
 import { verifyRoomToken } from "../services/roomAccess.js";
 import {
   parseProject,
   prepareProjectSubmission,
 } from "../services/projectRun.js";
+import { runQueue } from "../queues/runQueue.js";
 
 const router = Router();
 
-router.use(
-  rateLimit({
-    windowMs: 60_000,
-    limit: 10,
-    standardHeaders: "draft-7",
-    legacyHeaders: false,
-    message: {
-      error: "Too many runs. Please try again in a minute.",
-    },
-  })
-);
+const submissionLimiter = rateLimit({
+  windowMs: 60_000,
+  limit: 10,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: {
+    error: "Too many runs. Please try again in a minute.",
+  },
+});
 
-type JudgeResult = {
-  status: {
-    id: number;
-    description: string;
-  };
-  stdout?: string | null;
-  stderr?: string | null;
-  compile_output?: string | null;
-  message?: string | null;
-  time?: string | null;
-  memory?: number | null;
-};
-
-function decode(value?: string | null) {
-  return value
-    ? Buffer.from(value, "base64").toString("utf8")
-    : "";
+function hashToken(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
 }
 
-router.post("/", async (req, res) => {
-  const { shareToken, code, project, stdin = "" } = req.body ?? {};
-const isProjectRun = project !== undefined;
+// Authenticate submissions and result requests.
+router.use(async (req, res, next) => {
+  res.setHeader("Cache-Control", "no-store");
 
-if (
-  typeof shareToken !== "string" ||
-  !shareToken.length ||
-  shareToken.length > 100 ||
-  typeof stdin !== "string" ||
-  Buffer.byteLength(stdin, "utf8") > 10_000
-) {
-  return res.status(400).json({
-    error: "Provide a room token and input up to 10 KB.",
-  });
-}
-
-if (
-  (!isProjectRun &&
-    (typeof code !== "string" ||
-      !code.trim() ||
-      Buffer.byteLength(code, "utf8") > 50_000)) ||
-  (isProjectRun && code !== undefined)
-) {
-  return res.status(400).json({
-    error: "Send either a project or non-empty code up to 50 KB.",
-  });
-}
   const authorization = req.get("authorization");
 
-if (!authorization?.startsWith("Bearer ")) {
-  return res.status(401).json({
-    error: "Room access token is required.",
-  });
-}
+  if (!authorization?.startsWith("Bearer ")) {
+    return res.status(401).json({
+      error: "Room access token is required.",
+    });
+  }
 
-let access: Awaited<ReturnType<typeof verifyRoomToken>>;
+  let access: Awaited<ReturnType<typeof verifyRoomToken>>;
 
-try {
-  access = await verifyRoomToken(
-    authorization.slice("Bearer ".length)
-  );
-} catch {
-  return res.status(401).json({
-    error: "Room access has expired. Please try again.",
-  });
-}
+  try {
+    access = await verifyRoomToken(authorization.slice(7));
+  } catch {
+    return res.status(401).json({
+      error: "Room access expired. Please try again.",
+    });
+  }
 
-if (access.role === "viewer") {
-  return res.status(403).json({
-    error: "Viewers cannot run code.",
-  });
-}
+  if (access.role !== "owner" && access.role !== "editor") {
+    return res.status(403).json({
+      error: "Only owners and editors can run code.",
+    });
+  }
 
-  const apiKey = process.env.JUDGE0_API_KEY;
+  res.locals.runAccess = access;
+  next();
+});
 
-  if (!apiKey) {
+router.post("/", submissionLimiter, async (req, res, next) => {
+  const { shareToken, code, project, stdin = "" } = req.body ?? {};
+  const isProjectRun = project !== undefined;
+
+  if (
+    typeof shareToken !== "string" ||
+    !shareToken.length ||
+    shareToken.length > 100 ||
+    typeof stdin !== "string" ||
+    Buffer.byteLength(stdin, "utf8") > 10_000
+  ) {
+    return res.status(400).json({
+      error: "Provide a room token and input up to 10 KB.",
+    });
+  }
+
+  if (
+    (!isProjectRun &&
+      (typeof code !== "string" ||
+        !code.trim() ||
+        Buffer.byteLength(code, "utf8") > 50_000)) ||
+    (isProjectRun && code !== undefined)
+  ) {
+    return res.status(400).json({
+      error: "Send either a project or non-empty code up to 50 KB.",
+    });
+  }
+
+  if (!process.env.JUDGE0_API_KEY?.trim()) {
     return res.status(503).json({
       error: "Code execution is not configured on the server.",
     });
   }
 
-  // Covers submission, polling and network requests.
-  const signal = AbortSignal.timeout(25_000);
-
   try {
+    const access = res.locals.runAccess;
+
     const room = await Room.findById(access.roomId).exec();
 
     if (!room) {
-      return res.status(404).json({
-        error: "Room not found.",
+      return res.status(404).json({ error: "Room not found." });
+    }
+
+    if (
+      shareToken !== room.shareToken &&
+      shareToken !== room.viewerToken
+    ) {
+      return res.status(403).json({
+        error: "Room access does not match.",
       });
     }
 
-    // The signed token identifies the room. Also check the URL invite
-// supplied by the client belongs to the same room.
-if (shareToken !== room.shareToken && shareToken !== room.viewerToken) {
-  return res.status(403).json({ error: "Room access does not match." });
-}
+    const language = room.language;
 
-let source: { source_code: string; additional_files?: string };
+    if (language !== "python" && language !== "javascript") {
+      return res.status(400).json({
+        error: "Unsupported room language.",
+      });
+    }
 
-if (isProjectRun) {
-  let validated: ReturnType<typeof parseProject>;
+    let sourceCode: string;
 
-  try {
-    validated = parseProject(project, room.language);
-  } catch (err) {
-    return res.status(400).json({
-      error: err instanceof Error ? err.message : "Invalid project.",
-    });
-  }
+    if (isProjectRun) {
+      try {
+        const validated = parseProject(project, language);
 
-  source = await prepareProjectSubmission(validated, room.language);
-} else {
-  source = { source_code: Buffer.from(code, "utf8").toString("base64") };
-}
+        sourceCode = prepareProjectSubmission(
+          validated,
+          language
+        ).source_code;
+      } catch (error) {
+        return res.status(400).json({
+          error:
+            error instanceof Error ? error.message : "Invalid project.",
+        });
+      }
+    } else {
+      sourceCode = Buffer.from(code, "utf8").toString("base64");
+    }
 
-    // Use the room's language rather than trusting the client.
     const languageId = Number(
-      room.language === "python"
+      language === "python"
         ? process.env.JUDGE0_PYTHON_ID ?? "71"
         : process.env.JUDGE0_JAVASCRIPT_ID ?? "63"
     );
 
     if (!Number.isInteger(languageId) || languageId <= 0) {
-      throw new Error("Invalid Judge0 language configuration.");
-    }
-
-    const baseUrl = (
-  process.env.JUDGE0_URL ?? "https://api.onlinecompiler.io/api/judge0"
-).replace(/\/+$/, "");
-
-    const headers = {
-      "Content-Type": "application/json",
-      Authorization: apiKey.trim(),
-    };
-    // Submit code
-    const submissionResponse = await fetch(
-      `${baseUrl}/submissions?base64_encoded=true&wait=false`,
-      {
-        method: "POST",
-        headers,
-        signal,
-        body: JSON.stringify({
-          language_id: languageId,
-          ...source,
-          stdin: Buffer.from(stdin).toString("base64"),
-          cpu_time_limit: 3,
-          wall_time_limit: 5,
-        }),
-      }
-    );
-
-    if (!submissionResponse.ok) {
-      const details = await submissionResponse.text();
-
-      console.error(
-        "Execution service rejected submission:",
-        submissionResponse.status,
-        details
-      );
-
-      return res.status(502).json({
-        error: `Execution service rejected submission (${submissionResponse.status}).`,
+      return res.status(503).json({
+        error: "Invalid execution language configuration.",
       });
     }
 
-    const submission = (await submissionResponse.json()) as {
-      token?: string;
-    };
+    const jobId = randomUUID();
+    const resultToken = randomBytes(32).toString("hex");
 
-    if (!submission.token) {
-      throw new Error("Judge0 did not return a submission token.");
-    }
-
-    while (!signal.aborted) {
-      await delay(1000, undefined, { signal });
-
-      // Retrieve results
-      const resultResponse = await fetch(
-        `${baseUrl}/submissions/${encodeURIComponent(
-          submission.token
-        )}?base64_encoded=true&fields=status,stdout,stderr,compile_output,message,time,memory`,
-        { headers, signal }
+    try {
+      await runQueue.add(
+        "execute",
+        {
+          roomId: String(room._id),
+          resultTokenHash: hashToken(resultToken),
+          languageId,
+          sourceCode,
+          stdin: Buffer.from(stdin, "utf8").toString("base64"),
+          createdAt: Date.now(),
+        },
+        { jobId }
       );
-
-      if (!resultResponse.ok) {
-        throw new Error(
-          `Judge0 result request failed: ${resultResponse.status}`
-        );
-      }
-
-      const result =
-        (await resultResponse.json()) as JudgeResult;
-
-      // 1 = queued, 2 = processing.
-      if (result.status.id <= 2) continue;
-
-      return res.json({
-        status: result.status.description,
-        statusId: result.status.id,
-        stdout: decode(result.stdout),
-        stderr: decode(result.stderr),
-        compileOutput: decode(result.compile_output),
-        message: decode(result.message),
-        time: result.time,
-        memory: result.memory,
+    } catch {
+      return res.status(503).json({
+        error: "The execution queue is unavailable. Check Redis.",
       });
     }
 
-    return res.status(504).json({
-      error: "Execution timed out. Try again shortly.",
+    // Only this browser receives the private result token.
+    return res.status(202).json({
+      jobId,
+      resultToken,
+      state: "queued",
     });
   } catch (error) {
-    if (signal.aborted) {
-      return res.status(504).json({
-        error: "Execution timed out. Try again shortly.",
-      });
+    next(error);
+  }
+});
+
+router.get("/:jobId", async (req, res, next) => {
+  const jobId = req.params.jobId;
+  const resultToken = req.get("x-run-token");
+
+  if (
+    typeof jobId !== "string" ||
+    !/^[0-9a-f-]{36}$/i.test(jobId) ||
+    !resultToken ||
+    !/^[0-9a-f]{64}$/i.test(resultToken)
+  ) {
+    return res.status(400).json({
+      error: "A valid job ID and private result token are required.",
+    });
+  }
+
+  try {
+    const { roomId } = res.locals.runAccess;
+
+    if (!(await Room.exists({ _id: roomId }))) {
+      return res.status(404).json({ error: "Room no longer exists." });
     }
 
-    console.error("Code execution failed:", error);
+    try {
+      const job = await runQueue.getJob(jobId);
 
-    return res.status(502).json({
-      error: "Could not execute the code. Check the backend terminal.",
-    });
+      if (
+        !job ||
+        job.data.roomId !== String(roomId) ||
+        !timingSafeEqual(
+          Buffer.from(hashToken(resultToken), "hex"),
+          Buffer.from(job.data.resultTokenHash, "hex")
+        )
+      ) {
+        return res.status(404).json({ error: "Run not found." });
+      }
+
+      // Enforce access expiry even before lazy queue cleanup occurs.
+      if (Date.now() - job.data.createdAt > 10 * 60_000) {
+        return res.status(410).json({
+          error: "This run has expired. Submit it again.",
+        });
+      }
+
+      const state = await job.getState();
+
+      if (state === "completed" && job.returnvalue) {
+        return res.json({
+          state: "completed",
+          result: job.returnvalue,
+        });
+      }
+
+      if (state === "failed") {
+        return res.json({
+          state: "failed",
+          error: job.failedReason || "Execution failed.",
+        });
+      }
+
+      if (state === "unknown") {
+        return res.status(410).json({
+          error: "This run is no longer available.",
+        });
+      }
+
+      return res.json({
+        state:
+          state === "active" || state === "completed"
+            ? "running"
+            : "queued",
+      });
+    } catch {
+      return res.status(503).json({
+        error: "Could not read the run status. Check Redis.",
+      });
+    }
+  } catch (error) {
+    next(error);
   }
 });
 

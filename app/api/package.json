@@ -6,13 +6,16 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
-    "start": "node dist/server.js"
+    "start": "node dist/server.js",
+    "worker:dev": "tsx watch src/workers/runWorker.ts",
+    "worker:start": "node dist/workers/runWorker.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "module",
   "dependencies": {
+    "bullmq": "^5.81.5",
     "cors": "2.8.6",
     "dotenv": "18.0.8",
     "express": "5.3.0",
